@@ -231,6 +231,7 @@ struct MainWindowView: View {
     }
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        let vm = viewModel
         let lock = NSLock()
         final class Box: @unchecked Sendable {
             var urls: [URL] = []
@@ -264,7 +265,7 @@ struct MainWindowView: View {
             lock.unlock()
             guard !dropped.isEmpty else { return }
             Task { @MainActor in
-                await viewModel.handleDroppedURLs(dropped)
+                await vm.handleDroppedURLs(dropped)
             }
         }
         return true

@@ -12,35 +12,6 @@ final class RawForgeAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let args = CommandLine.arguments
 
-        // Automated self-check mode for headless bundle verification
-        if args.contains("--self-check") {
-            let explicitPath = args.firstIndex(of: "--open").flatMap { idx in
-                idx + 1 < args.count ? args[idx + 1] : nil
-            }
-
-            Task { @MainActor in
-                var tempFileURL: URL?
-                let checkPath: String
-                if let explicitPath, FileManager.default.fileExists(atPath: explicitPath) {
-                    checkPath = explicitPath
-                } else {
-                    let tempURL = FileManager.default.temporaryDirectory
-                        .appendingPathComponent("RawForge-SelfCheck-\(UUID().uuidString).dng")
-                    let data = SampleRawGenerator.makeLinearDNG(width: 320, height: 240)
-                    try? data.write(to: tempURL)
-                    tempFileURL = tempURL
-                    checkPath = tempURL.path
-                }
-                let ok = await viewModel.runSelfCheck(testPhotoPath: checkPath)
-                if let tempFileURL {
-                    try? FileManager.default.removeItem(at: tempFileURL)
-                }
-                NSApp.terminate(nil)
-                exit(ok ? 0 : 1)
-            }
-            return
-        }
-
         NSApp.setActivationPolicy(.regular)
         NSApp.appearance = NSAppearance(named: .darkAqua)
         installMainMenu()
@@ -168,6 +139,38 @@ final class RawForgeAppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = mainMenu
         NSApp.windowsMenu = windowMenu
     }
+}
+
+let launchArgs = CommandLine.arguments
+if launchArgs.contains("--self-check") {
+    let explicitPath = launchArgs.firstIndex(of: "--open").flatMap { idx in
+        idx + 1 < launchArgs.count ? launchArgs[idx + 1] : nil
+    }
+
+    Task { @MainActor in
+        let viewModel = AppViewModel()
+        var tempFileURL: URL?
+        let checkPath: String
+        if let explicitPath, FileManager.default.fileExists(atPath: explicitPath) {
+            checkPath = explicitPath
+        } else {
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("RawForge-SelfCheck-\(UUID().uuidString).dng")
+            let data = SampleRawGenerator.makeLinearDNG(width: 320, height: 240)
+            try? data.write(to: tempURL)
+            tempFileURL = tempURL
+            checkPath = tempURL.path
+        }
+        let ok = await viewModel.runSelfCheck(testPhotoPath: checkPath)
+        if let tempFileURL {
+            try? FileManager.default.removeItem(at: tempFileURL)
+        }
+        exit(ok ? 0 : 1)
+    }
+
+    RunLoop.main.run(until: Date().addingTimeInterval(20))
+    fputs("Self-check timed out\n", stderr)
+    exit(2)
 }
 
 let app = NSApplication.shared

@@ -125,8 +125,12 @@ public enum RawRenderPipeline {
         if raw.isLensCorrectionSupported {
             raw.isLensCorrectionEnabled = recipe.lensCorrection
         }
-        if #available(macOS 16.0, *), raw.isHighlightRecoverySupported {
-            raw.isHighlightRecoveryEnabled = recipe.highlightRecovery
+        let supportSelector = NSSelectorFromString("isHighlightRecoverySupported")
+        let setterSelector = NSSelectorFromString("setHighlightRecoveryEnabled:")
+        if raw.responds(to: supportSelector),
+           raw.responds(to: setterSelector),
+           (raw.value(forKey: "highlightRecoverySupported") as? Bool) == true {
+            raw.setValue(recipe.highlightRecovery, forKey: "highlightRecoveryEnabled")
         }
     }
 

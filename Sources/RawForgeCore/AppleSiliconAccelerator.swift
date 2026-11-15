@@ -32,7 +32,8 @@ public struct HardwareCapabilities: Sendable {
     public static func detect() -> HardwareCapabilities {
         let chip = sysctlString("machdep.cpu.brand_string") ?? "Apple Silicon"
         let total = max(1, sysctlInt("hw.ncpu") ?? ProcessInfo.processInfo.activeProcessorCount)
-        let perf = sysctlInt("hw.perflevel0.logicalcpu") ?? total
+        let rawPerf = sysctlInt("hw.perflevel0.logicalcpu") ?? 0
+        let perf = rawPerf > 0 ? rawPerf : total
         let eff = sysctlInt("hw.perflevel1.logicalcpu") ?? max(0, total - perf)
         let mem = ProcessInfo.processInfo.physicalMemory
 
