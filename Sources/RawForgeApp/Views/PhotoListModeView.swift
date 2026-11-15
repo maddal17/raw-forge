@@ -304,28 +304,36 @@ struct PhotoListModeView: View {
             }
             .buttonStyle(.plain)
 
-            // Medium Preview Thumbnail
-            ZStack {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.black.opacity(0.45))
+            // Proportional Medium Preview Thumbnail (column aligned, no black filler bars)
+            let cg = viewModel.thumbnails[photo.id]
+            let aspect = PhotoBoxLayout.effectiveAspectRatio(for: photo, thumbnail: cg)
+            let box = PhotoBoxLayout.fittedBoxSize(
+                aspectRatio: aspect,
+                maxWidth: viewModel.previewSize,
+                maxHeight: viewModel.previewSize * 0.85
+            )
 
-                if let cg = viewModel.thumbnails[photo.id] {
+            ZStack {
+                if let cg {
                     CGImageView(cgImage: cg)
                         .aspectRatio(contentMode: .fit)
-                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
                 } else {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.white.opacity(0.05))
                     ProgressView()
                         .controlSize(.small)
                 }
             }
-            .frame(width: viewModel.previewSize, height: viewModel.previewSize * 0.68)
+            .frame(width: box.width, height: box.height)
             .overlay(
                 RoundedRectangle(cornerRadius: 6)
                     .stroke(
-                        assignedGroup.map { Color(hex: $0.colorHex).opacity(0.8) } ?? Color.white.opacity(0.08),
+                        assignedGroup.map { Color(hex: $0.colorHex).opacity(0.8) } ?? Color.white.opacity(0.10),
                         lineWidth: assignedGroup != nil ? 2 : 1
                     )
             )
+            .frame(width: viewModel.previewSize, alignment: .center)
 
             // Metadata & Camera Summary
             VStack(alignment: .leading, spacing: 4) {
@@ -406,6 +414,18 @@ struct PhotoListModeView: View {
                 .fixedSize()
 
                 Button {
+                    viewModel.openExportForSinglePhoto(photo)
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 12))
+                        .padding(6)
+                        .background(Color.white.opacity(0.07))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+                .help("Convert & export only this photo")
+
+                Button {
                     viewModel.setActivePhoto(photo.id)
                     viewModel.workspaceMode = .loupe
                 } label: {
@@ -449,43 +469,60 @@ struct PhotoListModeView: View {
         let assignedGroup = viewModel.group(for: photo.id)
         let isSelected = viewModel.selectedPhotoIDs.contains(photo.id)
         let isActive = viewModel.activePhoto?.id == photo.id
+        let cg = viewModel.thumbnails[photo.id]
+        let aspect = PhotoBoxLayout.effectiveAspectRatio(for: photo, thumbnail: cg)
 
         return VStack(alignment: .leading, spacing: 6) {
-            ZStack(alignment: .topLeading) {
-                RoundedRectangle(cornerRadius: 7)
-                    .fill(Color.black.opacity(0.5))
+            GeometryReader { geo in
+                let box = PhotoBoxLayout.fittedBoxSize(
+                    aspectRatio: aspect,
+                    maxWidth: Double(geo.size.width),
+                    maxHeight: Double(geo.size.height)
+                )
 
-                if let cg = viewModel.thumbnails[photo.id] {
-                    CGImageView(cgImage: cg)
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                } else {
-                    ProgressView().controlSize(.small)
-                }
-
-                HStack {
-                    Button {
-                        viewModel.toggleCheckbox(for: photo.id)
-                    } label: {
-                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                            .font(.system(size: 16))
-                            .foregroundStyle(isSelected ? StudioTheme.accentBlue : .white.opacity(0.8))
-                            .shadow(radius: 2)
+                ZStack(alignment: .topLeading) {
+                    if let cg {
+                        CGImageView(cgImage: cg)
+                            .aspectRatio(contentMode: .fit)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    } else {
+                        RoundedRectangle(cornerRadius: 7)
+                            .fill(Color.white.opacity(0.05))
+                        ProgressView().controlSize(.small)
                     }
-                    .buttonStyle(.plain)
-                    Spacer()
-                    Text(photo.fileExtension.uppercased())
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(Color.black.opacity(0.65))
-                        .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
+
+                    HStack {
+                        Button {
+                            viewModel.toggleCheckbox(for: photo.id)
+                        } label: {
+                            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 16))
+                                .foregroundStyle(isSelected ? StudioTheme.accentBlue : .white.opacity(0.85))
+                                .shadow(radius: 2)
+                        }
+                        .buttonStyle(.plain)
+                        Spacer()
+                        Text(photo.fileExtension.uppercased())
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.black.opacity(0.65))
+                            .foregroundStyle(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                    .padding(6)
                 }
-                .padding(6)
+                .frame(width: box.width, height: box.height)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(
+                            assignedGroup.map { Color(hex: $0.colorHex).opacity(0.75) } ?? Color.white.opacity(0.08),
+                            lineWidth: assignedGroup != nil ? 1.5 : 1
+                        )
+                )
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .center)
             }
-            .frame(height: viewModel.previewSize * 0.78)
+            .frame(height: viewModel.previewSize * 0.85)
 
             HStack(spacing: 6) {
                 Circle()

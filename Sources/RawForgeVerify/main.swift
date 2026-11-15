@@ -192,6 +192,40 @@ struct RawForgeVerify {
             try expect(brightLum > darkLum + 30.0, "Group +1.2 EV must render measurably brighter than -0.5 EV")
             try expect((brightRGB.r / max(1, brightRGB.b)) > (darkRGB.r / max(1, darkRGB.b)),
                        "Fixed 7500K render must have warmer R/B ratio than 3600K render")
+
+            // Legacy GlobalAppSettings JSON migration check
+            let legacyJSON = Data("{\"includeStandardImages\":true}".utf8)
+            let legacyDecoded = try JSONDecoder().decode(GlobalAppSettings.self, from: legacyJSON)
+            try expectEqual(legacyDecoded.includeStandardImages, true, "Legacy boolean field should decode")
+            try expectEqual(legacyDecoded.defaultInspectorMode, .simple, "Legacy JSON must default inspector to .simple")
+            var proSettings = GlobalAppSettings()
+            proSettings.defaultInspectorMode = .pro
+            let proRoundTrip = try JSONDecoder().decode(GlobalAppSettings.self, from: JSONEncoder().encode(proSettings))
+            try expectEqual(proRoundTrip.defaultInspectorMode, .pro, "GlobalAppSettings must round-trip .pro mode")
+
+            // Natural PhotoItem aspectRatio check (portrait & landscape)
+            let portraitItem = PhotoItem(url: sample.url, dimensions: CGSize(width: 240, height: 320))
+            let landscapeItem = PhotoItem(url: sample.url, dimensions: CGSize(width: 320, height: 240))
+            try expect(abs(portraitItem.aspectRatio - 0.75) < 0.001, "Portrait aspectRatio should be 0.75")
+            try expect(abs(landscapeItem.aspectRatio - (4.0 / 3.0)) < 0.001, "Landscape aspectRatio should be ~1.333")
+
+            // 16 Curated Presets + Level-1 White Balance scenes
+            try expectEqual(RecipePreset.allCases.count, 16, "Expected 16 curated presets")
+            var wbRecipe = EditRecipe()
+            SimpleWhiteBalanceScene.sunny.apply(to: &wbRecipe)
+            try expect(wbRecipe.whiteBalanceMode == .customKelvin && wbRecipe.customKelvin == 5500, "Sunny WB must set 5500K")
+            SimpleWhiteBalanceScene.tungsten.apply(to: &wbRecipe)
+            try expect(wbRecipe.whiteBalanceMode == .customKelvin && wbRecipe.customKelvin == 3200, "Tungsten WB must set 3200K")
+            SimpleWhiteBalanceScene.asShot.apply(to: &wbRecipe)
+            try expect(wbRecipe.whiteBalanceMode == .asShotOffset, "As Shot WB must restore .asShotOffset")
+
+            // Ticket coalescing check: stale tickets must return nil instead of queueing behind drags
+            let staleTicket = renderer.issueTicket()
+            let freshTicket = renderer.issueTicket()
+            let skipped = await renderer.renderPreview(photo: sample, recipe: brightRecipe, maxEdgePixels: 320, draftMode: true, watermark: nil, ticket: staleTicket)
+            try expect(skipped == nil, "Superseded render ticket must short-circuit to nil")
+            let kept = await renderer.renderPreview(photo: sample, recipe: brightRecipe, maxEdgePixels: 320, draftMode: false, watermark: nil, ticket: freshTicket)
+            try expect(kept != nil, "Latest render ticket must execute normally")
         }
 
         // 3. Author Watermark + Metadata Add/Subtract Across Export Formats (JPG, HEIC, 16-bit PNG, 16-bit TIFF, AVIF)
@@ -406,18 +440,29 @@ struct RawForgeVerify {
             try expect(sourcePhoto.isRaw, "\(sourceURL.lastPathComponent) must be recognized as RAW")
             try expect(sourcePhoto.dimensions.width >= 1000 && sourcePhoto.dimensions.height >= 1000, "Expected high-resolution dimensions")
 
-            // Loupe warmup + warm slider drag latency check
+            // Loupe warmup + warm slider drag latency + CIRAWFilter reuse exposure response check
             let loupe = InteractiveLoupeRenderer()
-            _ = await loupe.renderPreview(photo: sourcePhoto, recipe: EditRecipe(), maxEdgePixels: 1280, draftMode: true, watermark: nil)
+            let baselineOut = await loupe.renderPreview(photo: sourcePhoto, recipe: EditRecipe(), maxEdgePixels: 1280, draftMode: true, watermark: nil)
+            try expect(baselineOut != nil, "Baseline loupe render must succeed")
             var dragRecipe = RecipePreset.goldenHourGlow.recipe
             dragRecipe.exposure = 0.65
             let warmOut = await loupe.renderPreview(photo: sourcePhoto, recipe: dragRecipe, maxEdgePixels: 1280, draftMode: true, watermark: nil)
             try expect(warmOut != nil, "Warm Metal draft render must succeed")
+            var darkReuseRecipe = EditRecipe()
+            darkReuseRecipe.exposure = -4.0
+            let darkReuseOut = await loupe.renderPreview(photo: sourcePhoto, recipe: darkReuseRecipe, maxEdgePixels: 1280, draftMode: false, watermark: nil)
+            try expect(darkReuseOut != nil, "Dark -4 EV reused filter render must succeed")
+            let baseAvg = sampleAverageRGB(baselineOut!.image)
+            let darkReuseAvg = sampleAverageRGB(darkReuseOut!.image)
+            let baseMean = (baseAvg.r + baseAvg.g + baseAvg.b) / 3.0
+            let darkMean = (darkReuseAvg.r + darkReuseAvg.g + darkReuseAvg.b) / 3.0
+            try expect(darkMean < baseMean * 0.65, "Reused CIRAWFilter at -4.0 EV must drop luminance below 65% (got \(darkMean) vs \(baseMean))")
             let histNonZero = warmOut!.histogram.luminance.contains { $0 > 0 }
             try expect(histNonZero, "Histogram must contain non-zero luminance bins")
-            print(String(format: "         Warm Loupe Draft Drag (%dx%d -> %dx%d): %.1f ms",
+            print(String(format: "         Warm Loupe Draft Drag (%dx%d -> %dx%d): %.1f ms (0EV=%.1f -> -4EV=%.1f)",
                          Int(sourcePhoto.dimensions.width), Int(sourcePhoto.dimensions.height),
-                         Int(warmOut!.renderedSize.width), Int(warmOut!.renderedSize.height), warmOut!.renderMilliseconds))
+                         Int(warmOut!.renderedSize.width), Int(warmOut!.renderedSize.height),
+                         warmOut!.renderMilliseconds, baseMean, darkMean))
 
             // 8-item parallel batch conversion using read-only symlinks in temp folder
             var batchItems: [BatchWorkItem] = []

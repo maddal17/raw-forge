@@ -52,8 +52,41 @@ struct ExportModalView: View {
 
                         Picker("Photos to Convert", selection: $viewModel.exportScope) {
                             ForEach(ExportScope.allCases) { scope in
-                                Text("\(scope.displayName) (\(viewModel.itemsForExportScope(scope).count))").tag(scope)
+                                let count = viewModel.itemsForExportScope(scope).count
+                                if scope == .currentPhoto, let active = viewModel.activePhoto {
+                                    Text("\(scope.displayName) — \(active.filename) (\(count))").tag(scope)
+                                } else {
+                                    Text("\(scope.displayName) (\(count))").tag(scope)
+                                }
                             }
+                        }
+
+                        if targetCount == 0 {
+                            HStack(spacing: 10) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                                Text("No photos match this scope (empty selection will not auto-convert the whole folder).")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                                Spacer()
+                                if viewModel.activePhoto != nil {
+                                    Button("Use Current Photo (1)") {
+                                        viewModel.exportScope = .currentPhoto
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+                                if !viewModel.photos.isEmpty {
+                                    Button("Use All Photos (\(viewModel.photos.count))") {
+                                        viewModel.exportScope = .allPhotos
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+                            }
+                            .padding(8)
+                            .background(Color.orange.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
                         }
 
                         HStack {

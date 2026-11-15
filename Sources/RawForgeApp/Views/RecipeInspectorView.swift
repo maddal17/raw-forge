@@ -7,26 +7,23 @@ struct RecipeInspectorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            histogramPanel
+            inspectorModeHeader
             Divider().background(StudioTheme.borderSubtle)
 
-            if let targetGroup = viewModel.inspectorTargetGroup {
+            if viewModel.inspectorMode == .pro {
+                histogramPanel
+                Divider().background(StudioTheme.borderSubtle)
+            }
+
+            if let ctx = viewModel.inspectorContext {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
-                        groupRecipeHeader(targetGroup)
-                        presetAndClipboardRow(targetGroup)
-                        Divider().background(StudioTheme.borderSubtle)
-                        whiteBalanceSection(targetGroup)
-                        Divider().background(StudioTheme.borderSubtle)
-                        lightToneSection(targetGroup)
-                        Divider().background(StudioTheme.borderSubtle)
-                        colorSection(targetGroup)
-                        Divider().background(StudioTheme.borderSubtle)
-                        detailOpticsSection(targetGroup)
+                        inspectorContextHeader(ctx)
 
-                        if let active = viewModel.activePhoto {
-                            Divider().background(StudioTheme.borderSubtle)
-                            perPhotoTrimSection(for: active)
+                        if viewModel.inspectorMode == .simple {
+                            simpleControls(for: ctx.group)
+                        } else {
+                            proControls(for: ctx.group)
                         }
                     }
                     .padding(14)
@@ -36,6 +33,29 @@ struct RecipeInspectorView: View {
             }
         }
         .background(StudioTheme.surfaceBg)
+    }
+
+    private var inspectorModeHeader: some View {
+        HStack(spacing: 10) {
+            Text("INSPECTOR")
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(StudioTheme.textSecondary)
+
+            Spacer()
+
+            Picker("", selection: $viewModel.inspectorMode) {
+                ForEach(InspectorMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .controlSize(.small)
+            .frame(width: 148)
+            .help("Simple shows curated presets, scene white balance, and color controls. Pro adds the live histogram and full RAW tuning.")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(StudioTheme.elevatedBg.opacity(0.65))
     }
 
     private var histogramPanel: some View {
@@ -62,52 +82,316 @@ struct RecipeInspectorView: View {
                 )
         }
         .padding(.horizontal, 14)
-        .padding(.top, 12)
+        .padding(.top, 10)
         .padding(.bottom, 10)
     }
 
-    private func groupRecipeHeader(_ group: LabelGroup) -> some View {
-        let memberCount = viewModel.photoCount(in: group.id)
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(Color(hex: group.colorHex))
-                    .frame(width: 11, height: 11)
-                Text(group.name)
-                    .font(.system(size: 13.5, weight: .bold))
-                    .foregroundStyle(.white)
-                Spacer()
-                Text("\(memberCount) photo\(memberCount == 1 ? "" : "s")")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(Color(hex: group.colorHex))
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
-                    .background(Color(hex: group.colorHex).opacity(0.18))
-                    .clipShape(Capsule())
+    private func inspectorContextHeader(_ ctx: AppViewModel.InspectorGroupContext) -> some View {
+        let group = ctx.group
+        return VStack(alignment: .leading, spacing: 6) {
+            if ctx.requiresAutoAssignOnEdit {
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.orange)
+                    Text("Unlabeled Photo — Adjusting assigns to:")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(.orange)
+                }
             }
-            Text("Changes apply simultaneously to all photos labeled \"\(group.name)\"")
-                .font(.system(size: 10.5))
-                .foregroundStyle(StudioTheme.textSecondary)
+
+            HStack(spacing: 8) {
+                Menu {
+                    ForEach(viewModel.groups) { grp in
+                        Button {
+                            if ctx.requiresAutoAssignOnEdit {
+                                viewModel.focusedGroupID = grp.id
+                            } else {
+                                viewModel.assignSelectedOrActive(to: grp.id, advanceInLoupe: false)
+                            }
+                        } label: {
+                            Text(grp.name)
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(Color(hex: group.colorHex))
+                            .frame(width: 10, height: 10)
+                        Text(group.name)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.white)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9))
+                            .foregroundStyle(StudioTheme.textSecondary)
+                    }
+                }
+                .menuStyle(.borderlessButton)
+
+                Spacer()
+
+                if ctx.requiresAutoAssignOnEdit {
+                    Button("Assign") {
+                        viewModel.assignSelectedOrActive(to: group.id, advanceInLoupe: false)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.mini)
+                } else {
+                    Text("\(ctx.targetPhotoCount) photo\(ctx.targetPhotoCount == 1 ? "" : "s")")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(Color(hex: group.colorHex))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(Color(hex: group.colorHex).opacity(0.18))
+                        .clipShape(Capsule())
+                }
+            }
+
+            Text(
+                ctx.requiresAutoAssignOnEdit
+                    ? "Moving any preset or slider automatically labels \(ctx.targetPhotoCount == 1 ? "this photo" : "\(ctx.targetPhotoCount) selected photos") as \"\(group.name)\"."
+                    : "Changes apply simultaneously to all photos labeled \"\(group.name)\""
+            )
+            .font(.system(size: 10.5))
+            .foregroundStyle(StudioTheme.textSecondary)
         }
         .padding(10)
-        .background(Color(hex: group.colorHex).opacity(0.10))
+        .background(
+            ctx.requiresAutoAssignOnEdit
+                ? Color.orange.opacity(0.10)
+                : Color(hex: group.colorHex).opacity(0.10)
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color(hex: group.colorHex).opacity(0.42), lineWidth: 1)
+                .stroke(
+                    ctx.requiresAutoAssignOnEdit
+                        ? Color.orange.opacity(0.45)
+                        : Color(hex: group.colorHex).opacity(0.42),
+                    lineWidth: 1
+                )
         )
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
-    private func presetAndClipboardRow(_ group: LabelGroup) -> some View {
+    @ViewBuilder
+    private func simpleControls(for group: LabelGroup) -> some View {
+        clipboardActionsRow(group)
+        Divider().background(StudioTheme.borderSubtle)
+        simplePresetsSection(group)
+        Divider().background(StudioTheme.borderSubtle)
+        simpleWhiteBalanceSection(group)
+        Divider().background(StudioTheme.borderSubtle)
+        simpleColorAndLightSection(group)
+    }
+
+    @ViewBuilder
+    private func proControls(for group: LabelGroup) -> some View {
+        proPresetAndClipboardRow(group)
+        Divider().background(StudioTheme.borderSubtle)
+        proWhiteBalanceSection(group)
+        Divider().background(StudioTheme.borderSubtle)
+        lightToneSection(group)
+        Divider().background(StudioTheme.borderSubtle)
+        colorSection(group)
+        Divider().background(StudioTheme.borderSubtle)
+        detailOpticsSection(group)
+
+        if let active = viewModel.activePhoto {
+            Divider().background(StudioTheme.borderSubtle)
+            perPhotoTrimSection(for: active)
+        }
+    }
+
+    private func clipboardActionsRow(_ group: LabelGroup) -> some View {
+        HStack(spacing: 6) {
+            Text("GROUP LOOK")
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(StudioTheme.textSecondary)
+
+            Spacer()
+
+            Button("Copy") { viewModel.copyRecipe(from: group.id) }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+            Button("Paste") { viewModel.pasteRecipe(to: group.id) }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(viewModel.clipboardRecipe == nil)
+
+            Button("Reset") { viewModel.setGroupRecipe(groupID: group.id, recipe: EditRecipe()) }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!group.recipe.hasAdjustments)
+        }
+    }
+
+    private func simplePresetsSection(_ group: LabelGroup) -> some View {
+        let columns = [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)]
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("CURATED PRESETS (16)")
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(StudioTheme.textSecondary)
+
+            ForEach(PresetCategory.allCases) { category in
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(category.displayName)
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(StudioTheme.textSecondary.opacity(0.9))
+
+                    LazyVGrid(columns: columns, spacing: 6) {
+                        ForEach(category.presets) { preset in
+                            let isSelected = group.recipe == preset.recipe
+                            Button {
+                                viewModel.setGroupRecipe(groupID: group.id, recipe: preset.recipe)
+                            } label: {
+                                Text(preset.displayName)
+                                    .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 6)
+                                    .background(isSelected ? StudioTheme.accentBlue.opacity(0.32) : StudioTheme.elevatedBg)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .stroke(
+                                                isSelected ? StudioTheme.accentBlue : StudioTheme.borderSubtle,
+                                                lineWidth: isSelected ? 1.5 : 1
+                                            )
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func simpleWhiteBalanceSection(_ group: LabelGroup) -> some View {
+        let recipe = group.recipe
+        let matchedScene = SimpleWhiteBalanceScene.matching(recipe: recipe)
+        let columns = [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)]
+        let wbReadout: String = recipe.whiteBalanceMode == .customKelvin
+            ? "\(Int(recipe.customKelvin.rounded())) K"
+            : String(format: "As Shot %+.0fK", recipe.temperatureShift)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("WHITE BALANCE (SCENE)")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(StudioTheme.textSecondary)
+                Spacer()
+                Text(wbReadout)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(StudioTheme.accentBlue)
+            }
+
+            LazyVGrid(columns: columns, spacing: 6) {
+                ForEach(SimpleWhiteBalanceScene.allCases) { scene in
+                    let isSelected = matchedScene == scene
+                    Button {
+                        viewModel.updateGroupRecipe(groupID: group.id, isDragging: false) { r in
+                            scene.apply(to: &r)
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: scene.symbolName)
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(isSelected ? StudioTheme.accentBlue : .orange.opacity(0.85))
+                            Text(scene.displayName)
+                                .font(.system(size: 10.5, weight: isSelected ? .semibold : .medium))
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 4)
+                        .background(isSelected ? StudioTheme.accentBlue.opacity(0.28) : StudioTheme.elevatedBg)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(isSelected ? StudioTheme.accentBlue : StudioTheme.borderSubtle, lineWidth: isSelected ? 1.5 : 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            if recipe.whiteBalanceMode == .asShotOffset {
+                RecipeSlider(
+                    "Warmth (Cool ↔ Warm)",
+                    value: recipe.temperatureShift,
+                    in: -2000...2000,
+                    defaultValue: 0,
+                    format: "%+.0f",
+                    unit: " K"
+                ) { val, dragging in
+                    viewModel.updateGroupRecipe(groupID: group.id, isDragging: dragging) { $0.temperatureShift = val }
+                }
+            } else {
+                RecipeSlider(
+                    "Warmth (Kelvin)",
+                    value: recipe.customKelvin,
+                    in: 2500...9500,
+                    defaultValue: 5500,
+                    format: "%.0f",
+                    unit: " K"
+                ) { val, dragging in
+                    viewModel.updateGroupRecipe(groupID: group.id, isDragging: dragging) { $0.customKelvin = val }
+                }
+            }
+
+            RecipeSlider(
+                "Color Tint (Green ↔ Magenta)",
+                value: recipe.tint,
+                in: -150...150,
+                defaultValue: 0,
+                format: "%+.0f"
+            ) { val, dragging in
+                viewModel.updateGroupRecipe(groupID: group.id, isDragging: dragging) { $0.tint = val }
+            }
+        }
+    }
+
+    private func simpleColorAndLightSection(_ group: LabelGroup) -> some View {
+        let recipe = group.recipe
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("COLOR & BRIGHTNESS")
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(StudioTheme.textSecondary)
+
+            RecipeSlider("Brightness", value: recipe.exposure, in: -3.0...3.0, defaultValue: 0, format: "%+.2f", unit: " EV") { val, dragging in
+                viewModel.updateGroupRecipe(groupID: group.id, isDragging: dragging) { $0.exposure = val }
+            }
+            RecipeSlider("Contrast", value: recipe.contrast, in: -100...100, defaultValue: 0, format: "%+.0f") { val, dragging in
+                viewModel.updateGroupRecipe(groupID: group.id, isDragging: dragging) { $0.contrast = val }
+            }
+            RecipeSlider("Color Pop (Vibrance)", value: recipe.vibrance, in: -100...100, defaultValue: 0, format: "%+.0f") { val, dragging in
+                viewModel.updateGroupRecipe(groupID: group.id, isDragging: dragging) { $0.vibrance = val }
+            }
+            RecipeSlider("Saturation", value: recipe.saturation, in: -100...100, defaultValue: 0, format: "%+.0f") { val, dragging in
+                viewModel.updateGroupRecipe(groupID: group.id, isDragging: dragging) { $0.saturation = val }
+            }
+        }
+    }
+
+    private func proPresetAndClipboardRow(_ group: LabelGroup) -> some View {
         HStack(spacing: 6) {
             Menu {
-                ForEach(RecipePreset.allCases) { preset in
-                    Button(preset.displayName) {
-                        viewModel.setGroupRecipe(groupID: group.id, recipe: preset.recipe)
+                ForEach(PresetCategory.allCases) { category in
+                    Section(category.displayName) {
+                        ForEach(category.presets) { preset in
+                            Button(preset.displayName) {
+                                viewModel.setGroupRecipe(groupID: group.id, recipe: preset.recipe)
+                            }
+                        }
                     }
                 }
             } label: {
-                Label("Preset", systemImage: "wand.and.stars")
+                Label("Presets", systemImage: "wand.and.stars")
                     .font(.system(size: 11.5))
             }
             .menuStyle(.borderedButton)
@@ -137,10 +421,11 @@ struct RecipeInspectorView: View {
         }
     }
 
-    private func whiteBalanceSection(_ group: LabelGroup) -> some View {
+    private func proWhiteBalanceSection(_ group: LabelGroup) -> some View {
         let recipe = group.recipe
+        let quickKelvins = [3200, 4200, 5000, 5500, 6500, 7500]
         return VStack(alignment: .leading, spacing: 8) {
-            Text("WHITE BALANCE")
+            Text("WHITE BALANCE (PRO)")
                 .font(.system(size: 10.5, weight: .semibold))
                 .foregroundStyle(StudioTheme.textSecondary)
 
@@ -180,6 +465,28 @@ struct RecipeInspectorView: View {
                     unit: " K"
                 ) { val, dragging in
                     viewModel.updateGroupRecipe(groupID: group.id, isDragging: dragging) { $0.customKelvin = val }
+                }
+            }
+
+            HStack(spacing: 4) {
+                ForEach(quickKelvins, id: \.self) { kelvin in
+                    let isActive = recipe.whiteBalanceMode == .customKelvin && abs(recipe.customKelvin - Double(kelvin)) < 120
+                    Button("\(kelvin)K") {
+                        viewModel.updateGroupRecipe(groupID: group.id, isDragging: false) { r in
+                            r.whiteBalanceMode = .customKelvin
+                            r.customKelvin = Double(kelvin)
+                        }
+                    }
+                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+                    .background(isActive ? StudioTheme.accentBlue.opacity(0.3) : StudioTheme.elevatedBg)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5)
+                            .stroke(isActive ? StudioTheme.accentBlue : StudioTheme.borderSubtle, lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    .buttonStyle(.plain)
                 }
             }
 
@@ -313,51 +620,16 @@ struct RecipeInspectorView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Label("Assign a Lighting Group to Edit", systemImage: "tag.circle.fill")
+                    Label("Open a Folder to Develop", systemImage: "folder.badge.plus")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.white)
-                    Text("RawForge edits photos through shared Lighting Groups so every photo with similar lighting renders cohesively as an album.")
+                    Text("Load RAW photos and create Lighting Groups so every photo with similar lighting renders cohesively as an album.")
                         .font(.system(size: 11.5))
                         .foregroundStyle(StudioTheme.textSecondary)
                 }
                 .padding(12)
                 .background(StudioTheme.elevatedBg)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                if viewModel.activePhoto != nil || !viewModel.selectedPhotoIDs.isEmpty {
-                    Text("QUICK ASSIGN SELECTION:")
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(StudioTheme.textSecondary)
-
-                    ForEach(viewModel.groups) { group in
-                        Button {
-                            viewModel.assignSelectedOrActive(to: group.id, advanceInLoupe: false)
-                        } label: {
-                            HStack(spacing: 8) {
-                                Circle()
-                                    .fill(Color(hex: group.colorHex))
-                                    .frame(width: 10, height: 10)
-                                Text(group.name)
-                                    .font(.system(size: 12.5, weight: .medium))
-                                Spacer()
-                                if let shortcut = group.shortcutNumber {
-                                    Text("Key \(shortcut)")
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .foregroundStyle(StudioTheme.textSecondary)
-                                }
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                            .background(Color(hex: group.colorHex).opacity(0.14))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 7)
-                                    .stroke(Color(hex: group.colorHex).opacity(0.45), lineWidth: 1)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 7))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
             }
             .padding(14)
         }

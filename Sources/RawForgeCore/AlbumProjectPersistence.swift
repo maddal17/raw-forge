@@ -1,15 +1,35 @@
 import CryptoKit
 import Foundation
 
-/// Persisted global application settings (watermark, metadata rules, export defaults, recent folders).
+/// Persisted global application settings (watermark, metadata rules, export defaults, inspector view, recent folders).
 public struct GlobalAppSettings: Codable, Equatable, Sendable {
     public var watermark: WatermarkSettings = WatermarkSettings()
     public var metadata: MetadataSettings = MetadataSettings()
     public var exportConfig: ExportConfiguration = ExportConfiguration()
     public var includeStandardImages: Bool = false
     public var recentFolders: [String] = []
+    public var defaultInspectorMode: InspectorMode = .simple
 
     public init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case watermark
+        case metadata
+        case exportConfig
+        case includeStandardImages
+        case recentFolders
+        case defaultInspectorMode
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.watermark = try container.decodeIfPresent(WatermarkSettings.self, forKey: .watermark) ?? WatermarkSettings()
+        self.metadata = try container.decodeIfPresent(MetadataSettings.self, forKey: .metadata) ?? MetadataSettings()
+        self.exportConfig = try container.decodeIfPresent(ExportConfiguration.self, forKey: .exportConfig) ?? ExportConfiguration()
+        self.includeStandardImages = try container.decodeIfPresent(Bool.self, forKey: .includeStandardImages) ?? false
+        self.recentFolders = try container.decodeIfPresent([String].self, forKey: .recentFolders) ?? []
+        self.defaultInspectorMode = try container.decodeIfPresent(InspectorMode.self, forKey: .defaultInspectorMode) ?? .simple
+    }
 }
 
 /// Persisted per-folder album state (label groups + recipes, filename->group mapping, per-photo micro trims).

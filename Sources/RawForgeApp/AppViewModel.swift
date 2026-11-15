@@ -51,7 +51,7 @@ enum SidebarFilter: Hashable {
 enum SettingsTab: String, CaseIterable, Identifiable {
     case watermark = "Author Watermark"
     case metadata = "Metadata (Add / Subtract)"
-    case engine = "Apple Silicon Engine"
+    case engine = "Workspace & Engine"
 
     var id: String { rawValue }
 }
@@ -103,6 +103,7 @@ final class AppViewModel: ObservableObject {
     @Published var sortOrder: PhotoSortOrder = .filename
     @Published var sidebarFilter: SidebarFilter = .all
     @Published var searchQuery: String = ""
+    @Published var inspectorMode: InspectorMode = .simple
 
     @Published var selectedPhotoIDs: Set<UUID> = []
     @Published var selectionAnchorID: UUID?
@@ -145,6 +146,7 @@ final class AppViewModel: ObservableObject {
     private var settleHighQualityTask: Task<Void, Never>?
     private var thumbnailRefreshTask: Task<Void, Never>?
     private var settingsCommitTask: Task<Void, Never>?
+    private var albumSaveTask: Task<Void, Never>?
     private var inFlightThumbnails: Set<UUID> = []
     private var exportTask: Task<Void, Never>?
 
@@ -153,7 +155,9 @@ final class AppViewModel: ObservableObject {
         self.loupeRenderer = InteractiveLoupeRenderer(metalDevice: pool.metalDevice)
         self.thumbnailGenerator = ThumbnailGenerator(metalDevice: pool.metalDevice)
         self.batchEngine = BatchConversionEngine(contextPool: pool)
-        self.globalSettings = AlbumProjectPersistence.loadGlobalSettings()
+        let loadedSettings = AlbumProjectPersistence.loadGlobalSettings()
+        self.globalSettings = loadedSettings
+        self.inspectorMode = loadedSettings.defaultInspectorMode
     }
 
     // MARK: - Computed Collections
@@ -241,6 +245,12 @@ final class AppViewModel: ObservableObject {
         return filteredPhotos
     }
 
+    struct InspectorGroupContext {
+        let group: LabelGroup
+        let targetPhotoCount: Int
+        let requiresAutoAssignOnEdit: Bool
+    }
+
     var activePhoto: PhotoItem? {
         if let activePhotoID, let found = photos.first(where: { $0.id == activePhotoID }) {
             return found
@@ -257,12 +267,67 @@ final class AppViewModel: ObservableObject {
            let found = groups.first(where: { $0.id == gid }) {
             return found
         }
-        if let focusedGroupID, let found = groups.first(where: { $0.id == focusedGroupID }) {
-            return found
-        }
         let selectedGroupIDs = Set(selectedPhotoIDs.compactMap { assignments[$0] })
         if selectedGroupIDs.count == 1, let onlyID = selectedGroupIDs.first {
             return groups.first(where: { $0.id == onlyID })
+        }
+        if selectedPhotoIDs.isEmpty && activePhoto == nil, let focusedGroupID,
+           let found = groups.first(where: { $0.id == focusedGroupID }) {
+            return found
+        }
+        return nil
+    }
+
+    /// Always resolves an active group context for the right inspector, marking unassigned active photos so editing auto-labels them cleanly.
+    var inspectorContext: InspectorGroupContext? {
+        if let active = activePhoto {
+            if let gid = assignments[active.id], let found = groups.first(where: { $0.id == gid }) {
+                return InspectorGroupContext(
+                    group: found,
+                    targetPhotoCount: photoCount(in: found.id),
+                    requiresAutoAssignOnEdit: false
+                )
+            }
+
+            let candidate: LabelGroup?
+            if case .group(let gid) = sidebarFilter, let filtered = groups.first(where: { $0.id == gid }) {
+                candidate = filtered
+            } else if let focusedGroupID, let focused = groups.first(where: { $0.id == focusedGroupID }) {
+                candidate = focused
+            } else {
+                candidate = groups.first
+            }
+
+            if let candidate {
+                let targetCount: Int
+                if workspaceMode == .list && selectedPhotoIDs.count > 1 {
+                    let unlabeledSelected = selectedPhotoIDs.filter { assignments[$0] == nil }.count
+                    targetCount = max(1, unlabeledSelected)
+                } else {
+                    targetCount = 1
+                }
+                return InspectorGroupContext(
+                    group: candidate,
+                    targetPhotoCount: targetCount,
+                    requiresAutoAssignOnEdit: true
+                )
+            }
+        }
+
+        if let target = inspectorTargetGroup {
+            return InspectorGroupContext(
+                group: target,
+                targetPhotoCount: photoCount(in: target.id),
+                requiresAutoAssignOnEdit: false
+            )
+        }
+
+        if let fallback = focusedGroupID.flatMap({ fid in groups.first(where: { $0.id == fid }) }) ?? groups.first {
+            return InspectorGroupContext(
+                group: fallback,
+                targetPhotoCount: photoCount(in: fallback.id),
+                requiresAutoAssignOnEdit: false
+            )
         }
         return nil
     }
@@ -407,7 +472,7 @@ final class AppViewModel: ObservableObject {
             selectionAnchorID = matched.id
         } else if let first = scanned.first {
             activePhotoID = first.id
-            selectedPhotoIDs = [first.id]
+            selectedPhotoIDs = []
             selectionAnchorID = first.id
         } else {
             activePhotoID = nil
@@ -462,6 +527,15 @@ final class AppViewModel: ObservableObject {
             trimsByFilename: trimsByName
         )
         AlbumProjectPersistence.saveAlbumState(state, for: folderURL)
+    }
+
+    private func scheduleAlbumStateSave() {
+        albumSaveTask?.cancel()
+        albumSaveTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            self?.persistAlbumState()
+        }
     }
 
     // MARK: - Selection & Navigation
@@ -674,10 +748,48 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - Group Recipe & Per-Photo Trim Editing
 
-    func updateGroupRecipe(groupID: UUID, isDragging: Bool = true, _ mutate: (inout EditRecipe) -> Void) {
+    func updateGroupRecipe(
+        groupID: UUID,
+        isDragging: Bool = true,
+        autoAssignActiveIfUnlabeled: Bool = true,
+        _ mutate: (inout EditRecipe) -> Void
+    ) {
         guard let idx = groups.firstIndex(where: { $0.id == groupID }) else { return }
         mutate(&groups[idx].recipe)
-        persistAlbumState()
+        focusedGroupID = groupID
+        if showBeforeOriginal {
+            showBeforeOriginal = false
+        }
+
+        var newlyAssignedIDs: [UUID] = []
+        if autoAssignActiveIfUnlabeled {
+            if workspaceMode == .list && selectedPhotoIDs.count > 1 {
+                for id in selectedPhotoIDs where assignments[id] == nil {
+                    assignments[id] = groupID
+                    thumbnails.removeValue(forKey: id)
+                    newlyAssignedIDs.append(id)
+                }
+            } else if let active = activePhoto, assignments[active.id] == nil {
+                assignments[active.id] = groupID
+                thumbnails.removeValue(forKey: active.id)
+                newlyAssignedIDs.append(active.id)
+            }
+        }
+
+        if !newlyAssignedIDs.isEmpty {
+            albumSaveTask?.cancel()
+            persistAlbumState()
+            for id in newlyAssignedIDs {
+                if let photo = photos.first(where: { $0.id == id }) {
+                    requestThumbnail(for: photo, force: true)
+                }
+            }
+        } else if isDragging {
+            scheduleAlbumStateSave()
+        } else {
+            albumSaveTask?.cancel()
+            persistAlbumState()
+        }
 
         if let active = activePhoto, assignments[active.id] == groupID {
             scheduleLoupeRender(draft: isDragging)
@@ -701,6 +813,9 @@ final class AppViewModel: ObservableObject {
 
     func updateActivePhotoTrim(_ mutate: (inout PhotoTrim) -> Void) {
         guard let active = activePhoto else { return }
+        if showBeforeOriginal {
+            showBeforeOriginal = false
+        }
         var current = trims[active.id] ?? PhotoTrim()
         mutate(&current)
         if current.hasTrim {
@@ -708,7 +823,7 @@ final class AppViewModel: ObservableObject {
         } else {
             trims.removeValue(forKey: active.id)
         }
-        persistAlbumState()
+        scheduleAlbumStateSave()
         scheduleLoupeRender(draft: true)
         requestThumbnail(for: active, force: true)
     }
@@ -762,16 +877,19 @@ final class AppViewModel: ObservableObject {
         let watermark = (!showBeforeOriginal && previewWatermarkInLoupe && globalSettings.watermark.isEnabled)
             ? globalSettings.watermark
             : nil
-        let targetPixels = draft ? 1280 : 2200
+        let targetPixels = draft ? 1024 : 2200
         let renderer = loupeRenderer
+        let ticket = renderer.issueTicket()
 
         loupeRenderTask = Task {
+            guard !Task.isCancelled else { return }
             let output = await renderer.renderPreview(
                 photo: photo,
                 recipe: recipe,
                 maxEdgePixels: targetPixels,
                 draftMode: draft,
-                watermark: watermark
+                watermark: watermark,
+                ticket: ticket
             )
             guard !Task.isCancelled, let output else { return }
             await MainActor.run {
@@ -822,8 +940,17 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    func openExportSheet() {
+    func openExportSheet(preferredScope: ExportScope? = nil) {
         flushGlobalSettingsIfNeeded()
+        if let preferredScope {
+            exportScope = preferredScope
+        } else if !selectedPhotoIDs.isEmpty {
+            exportScope = .selectedPhotos
+        } else if workspaceMode == .loupe, activePhoto != nil {
+            exportScope = .currentPhoto
+        } else {
+            exportScope = .selectedPhotos
+        }
         if exportDestinationURL == nil, let folder = currentFolderURL {
             exportDestinationURL = folder.appendingPathComponent("RawForge Export", isDirectory: true)
         }
@@ -840,6 +967,11 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    func openExportForSinglePhoto(_ photo: PhotoItem) {
+        setActivePhoto(photo.id)
+        openExportSheet(preferredScope: .currentPhoto)
+    }
+
     func chooseExportDestinationPanel() {
         let panel = NSOpenPanel()
         panel.title = "Select Export Destination Folder"
@@ -853,11 +985,13 @@ final class AppViewModel: ObservableObject {
 
     func itemsForExportScope(_ scope: ExportScope) -> [PhotoItem] {
         switch scope {
-        case .allPhotos:
-            return photos
+        case .currentPhoto:
+            if let active = activePhoto {
+                return [active]
+            }
+            return []
         case .selectedPhotos:
-            let sel = photos.filter { selectedPhotoIDs.contains($0.id) }
-            return sel.isEmpty ? photos : sel
+            return photos.filter { selectedPhotoIDs.contains($0.id) }
         case .labeledOnly:
             return photos.filter { assignments[$0.id] != nil }
         case .activeGroupOnly:
@@ -865,6 +999,8 @@ final class AppViewModel: ObservableObject {
                 return photos.filter { assignments[$0.id] == targetGroup.id }
             }
             return []
+        case .allPhotos:
+            return photos
         }
     }
 

@@ -157,3 +157,30 @@ struct GroupEditorSheet: View {
         .frame(width: 360)
     }
 }
+
+/// Computes natural-proportion bounding boxes so portraits and panoramas never get letterboxed into black rectangles.
+enum PhotoBoxLayout {
+    static func effectiveAspectRatio(for photo: PhotoItem, thumbnail: CGImage?) -> Double {
+        if let thumbnail, thumbnail.width > 0, thumbnail.height > 0 {
+            let ratio = Double(thumbnail.width) / Double(thumbnail.height)
+            return max(0.35, min(3.0, ratio))
+        }
+        return photo.aspectRatio
+    }
+
+    static func fittedBoxSize(aspectRatio: Double, maxWidth: Double, maxHeight: Double) -> CGSize {
+        let clampedW = max(24.0, maxWidth)
+        let clampedH = max(24.0, maxHeight)
+        let ratio = max(0.35, min(3.0, aspectRatio))
+        let w: Double
+        let h: Double
+        if (clampedW / clampedH) > ratio {
+            h = clampedH
+            w = clampedH * ratio
+        } else {
+            w = clampedW
+            h = clampedW / ratio
+        }
+        return CGSize(width: max(24.0, w), height: max(24.0, h))
+    }
+}

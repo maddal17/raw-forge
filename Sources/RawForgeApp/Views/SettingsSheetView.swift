@@ -27,7 +27,7 @@ struct SettingsSheetView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 470)
+                .frame(width: 500)
                 Spacer()
                 Button(returnToExport ? "Done (Back to Export)" : "Done") {
                     viewModel.dismissSettingsAndReturnToExportIfNeeded(returnToExport)
@@ -262,6 +262,34 @@ struct SettingsSheetView: View {
     private var engineTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("DEFAULT INSPECTOR VIEW")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(StudioTheme.textSecondary)
+
+                    HStack {
+                        Text("Default Right Panel Mode:")
+                        Picker("", selection: $viewModel.globalSettings.defaultInspectorMode) {
+                            ForEach(InspectorMode.allCases) { mode in
+                                Text(mode.displayName).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 220)
+                        .onChange(of: viewModel.globalSettings.defaultInspectorMode) { _, mode in
+                            viewModel.inspectorMode = mode
+                        }
+                    }
+
+                    Text("Simple opens with curated presets, scene white balance, and color sliders. Pro adds the live RGB/Luminance histogram and full RAW controls.")
+                        .font(.caption)
+                        .foregroundStyle(StudioTheme.textSecondary)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(StudioTheme.surfaceBg)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+
                 VStack(alignment: .leading, spacing: 8) {
                     Label("Apple Silicon Hardware Acceleration", systemImage: "cpu.fill")
                         .font(.headline)

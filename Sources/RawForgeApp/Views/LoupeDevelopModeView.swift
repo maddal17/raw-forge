@@ -93,6 +93,18 @@ struct LoupeDevelopModeView: View {
             }
             .toggleStyle(.button)
             .help("Advance to the next photo automatically when assigning a label")
+
+            Button {
+                if let photo = viewModel.activePhoto {
+                    viewModel.openExportForSinglePhoto(photo)
+                }
+            } label: {
+                Label("Export Photo…", systemImage: "square.and.arrow.up")
+                    .font(.system(size: 11.5))
+            }
+            .buttonStyle(.bordered)
+            .disabled(viewModel.activePhoto == nil)
+            .help("Convert and export only this current photo")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
@@ -298,16 +310,18 @@ private struct FilmstripTile: View {
     let onSelect: () -> Void
 
     var body: some View {
-        VStack(spacing: 4) {
-            ZStack(alignment: .bottomLeading) {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.black.opacity(0.55))
+        let aspect = PhotoBoxLayout.effectiveAspectRatio(for: photo, thumbnail: thumbnail)
+        let tileWidth = CGFloat(max(46.0, min(185.0, 82.0 * aspect)))
 
+        return VStack(spacing: 4) {
+            ZStack(alignment: .bottom) {
                 if let thumbnail {
                     CGImageView(cgImage: thumbnail)
                         .aspectRatio(contentMode: .fit)
-                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
                 } else {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.white.opacity(0.05))
                     ProgressView().controlSize(.small)
                 }
 
@@ -319,11 +333,11 @@ private struct FilmstripTile: View {
                         .padding(.bottom, 3)
                 }
             }
-            .frame(width: 122, height: 82)
+            .frame(width: tileWidth, height: 82)
             .overlay(
                 RoundedRectangle(cornerRadius: 6)
                     .stroke(
-                        isActive ? StudioTheme.accentBlue : Color.white.opacity(0.12),
+                        isActive ? StudioTheme.accentBlue : Color.white.opacity(0.14),
                         lineWidth: isActive ? 2.5 : 1
                     )
             )
@@ -332,7 +346,8 @@ private struct FilmstripTile: View {
                 .font(.system(size: 10, weight: isActive ? .semibold : .regular))
                 .foregroundStyle(isActive ? .white : StudioTheme.textSecondary)
                 .lineLimit(1)
-                .frame(width: 122)
+                .truncationMode(.middle)
+                .frame(width: max(68, tileWidth))
         }
         .contentShape(Rectangle())
         .onAppear(perform: onAppearLoad)

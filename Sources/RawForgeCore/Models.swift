@@ -223,6 +223,13 @@ public struct PhotoItem: Identifiable, Hashable, Codable, Sendable {
         (Double(dimensions.width) * Double(dimensions.height)) / 1_000_000.0
     }
 
+    /// Clamped width / height ratio (0.35 ... 3.0) so previews follow natural photo proportions.
+    public var aspectRatio: Double {
+        guard dimensions.width > 0 && dimensions.height > 0 else { return 1.5 }
+        let ratio = Double(dimensions.width) / Double(dimensions.height)
+        return max(0.35, min(3.0, ratio))
+    }
+
     public var formattedDimensions: String {
         guard dimensions.width > 0 && dimensions.height > 0 else { return "Unknown size" }
         return "\(Int(dimensions.width)) × \(Int(dimensions.height))"
@@ -272,6 +279,107 @@ public enum WhiteBalanceMode: String, CaseIterable, Codable, Identifiable, Senda
         case .asShotOffset: return "As Shot ± Offset"
         case .customKelvin: return "Match Fixed Kelvin"
         }
+    }
+}
+
+/// Controls whether the right develop inspector shows streamlined controls or the full Pro suite with histogram.
+public enum InspectorMode: String, CaseIterable, Codable, Identifiable, Sendable {
+    case simple
+    case pro
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .simple: return "Simple"
+        case .pro: return "Pro"
+        }
+    }
+}
+
+/// Level-1 (Amateur) white balance scene presets translated directly into non-destructive RAW develop settings.
+public enum SimpleWhiteBalanceScene: String, CaseIterable, Identifiable, Sendable {
+    case asShot
+    case sunny
+    case cloudy
+    case shade
+    case tungsten
+    case fluorescent
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .asShot: return "As Shot"
+        case .sunny: return "Sunny"
+        case .cloudy: return "Cloudy"
+        case .shade: return "Shade"
+        case .tungsten: return "Tungsten"
+        case .fluorescent: return "Fluorescent"
+        }
+    }
+
+    public var symbolName: String {
+        switch self {
+        case .asShot: return "camera"
+        case .sunny: return "sun.max.fill"
+        case .cloudy: return "cloud.fill"
+        case .shade: return "cloud.sun.fill"
+        case .tungsten: return "lightbulb.fill"
+        case .fluorescent: return "bolt.horizontal.fill"
+        }
+    }
+
+    public var targetKelvin: Double? {
+        switch self {
+        case .asShot: return nil
+        case .sunny: return 5500
+        case .cloudy: return 6500
+        case .shade: return 7500
+        case .tungsten: return 3200
+        case .fluorescent: return 4200
+        }
+    }
+
+    public func apply(to recipe: inout EditRecipe) {
+        switch self {
+        case .asShot:
+            recipe.whiteBalanceMode = .asShotOffset
+            recipe.temperatureShift = 0
+            recipe.tint = 0
+        case .sunny:
+            recipe.whiteBalanceMode = .customKelvin
+            recipe.customKelvin = 5500
+            recipe.tint = 0
+        case .cloudy:
+            recipe.whiteBalanceMode = .customKelvin
+            recipe.customKelvin = 6500
+            recipe.tint = 4
+        case .shade:
+            recipe.whiteBalanceMode = .customKelvin
+            recipe.customKelvin = 7500
+            recipe.tint = 6
+        case .tungsten:
+            recipe.whiteBalanceMode = .customKelvin
+            recipe.customKelvin = 3200
+            recipe.tint = -4
+        case .fluorescent:
+            recipe.whiteBalanceMode = .customKelvin
+            recipe.customKelvin = 4200
+            recipe.tint = 14
+        }
+    }
+
+    public static func matching(recipe: EditRecipe) -> SimpleWhiteBalanceScene? {
+        if recipe.whiteBalanceMode == .asShotOffset {
+            return abs(recipe.temperatureShift) < 50 && abs(recipe.tint) < 2 ? .asShot : nil
+        }
+        for scene in SimpleWhiteBalanceScene.allCases {
+            if let k = scene.targetKelvin, abs(recipe.customKelvin - k) < 120 {
+                return scene
+            }
+        }
+        return nil
     }
 }
 
@@ -352,27 +460,85 @@ public struct EditRecipe: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-/// Built-in curated starting presets for common lighting scenarios.
-public enum RecipePreset: String, CaseIterable, Identifiable, Sendable {
-    case asShot
-    case daylightCrisp
-    case goldenHourGlow
-    case indoorTungstenBalance
-    case coolShadeFix
-    case highISOClean
-    case editorialMonochrome
+/// Organizes develop presets into approachable shooting scenarios.
+public enum PresetCategory: String, CaseIterable, Identifiable, Sendable {
+    case essentials
+    case outdoorLight
+    case indoorPortrait
+    case editorialFilm
 
     public var id: String { rawValue }
 
     public var displayName: String {
         switch self {
+        case .essentials: return "Essentials"
+        case .outdoorLight: return "Outdoor & Light"
+        case .indoorPortrait: return "Indoor & Portrait"
+        case .editorialFilm: return "Film & B&W"
+        }
+    }
+
+    public var presets: [RecipePreset] {
+        RecipePreset.allCases.filter { $0.category == self }
+    }
+}
+
+/// Built-in curated starting presets across lighting, portrait, and film looks.
+public enum RecipePreset: String, CaseIterable, Identifiable, Sendable {
+    // Essentials
+    case asShot
+    case autoBalanced
+    case vividPop
+    case airyBright
+    // Outdoor & Light
+    case daylightCrisp
+    case goldenHourGlow
+    case coolShadeFix
+    case overcastPop
+    // Indoor & Portrait
+    case indoorTungstenBalance
+    case warmPortrait
+    case highISOClean
+    // Film & B&W
+    case cleanFilm
+    case moodyMatte
+    case cinematicTealAmber
+    case editorialMonochrome
+    case highContrastBW
+
+    public var id: String { rawValue }
+
+    public var category: PresetCategory {
+        switch self {
+        case .asShot, .autoBalanced, .vividPop, .airyBright:
+            return .essentials
+        case .daylightCrisp, .goldenHourGlow, .coolShadeFix, .overcastPop:
+            return .outdoorLight
+        case .indoorTungstenBalance, .warmPortrait, .highISOClean:
+            return .indoorPortrait
+        case .cleanFilm, .moodyMatte, .cinematicTealAmber, .editorialMonochrome, .highContrastBW:
+            return .editorialFilm
+        }
+    }
+
+    public var displayName: String {
+        switch self {
         case .asShot: return "As Shot (Neutral)"
+        case .autoBalanced: return "Auto Balanced"
+        case .vividPop: return "Vivid Color Pop"
+        case .airyBright: return "Airy & Bright"
         case .daylightCrisp: return "Daylight Crisp"
         case .goldenHourGlow: return "Golden Hour Glow"
-        case .indoorTungstenBalance: return "Indoor Tungsten Fix"
         case .coolShadeFix: return "Cool Shade Warmth"
+        case .overcastPop: return "Overcast Punch"
+        case .indoorTungstenBalance: return "Indoor Tungsten Fix"
+        case .warmPortrait: return "Warm Portrait"
         case .highISOClean: return "High ISO Clean"
+        case .cleanFilm: return "Clean Daylight Film"
+        case .moodyMatte: return "Moody Matte"
+        case .cinematicTealAmber: return "Cinematic Teal & Warm"
         case .editorialMonochrome: return "Editorial B&W"
+        case .highContrastBW: return "High-Contrast B&W"
         }
     }
 
@@ -381,6 +547,28 @@ public enum RecipePreset: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .asShot:
             return r
+        case .autoBalanced:
+            r.exposure = 0.15
+            r.contrast = 12
+            r.highlights = -24
+            r.shadows = 24
+            r.vibrance = 14
+            r.clarity = 10
+        case .vividPop:
+            r.contrast = 18
+            r.highlights = -18
+            r.shadows = 16
+            r.vibrance = 34
+            r.saturation = 12
+            r.clarity = 18
+            r.sharpness = 35
+        case .airyBright:
+            r.exposure = 0.55
+            r.contrast = -6
+            r.highlights = -32
+            r.shadows = 38
+            r.whites = 10
+            r.vibrance = 12
         case .daylightCrisp:
             r.contrast = 14
             r.highlights = -25
@@ -395,8 +583,26 @@ public enum RecipePreset: String, CaseIterable, Identifiable, Sendable {
             r.tint = 8
             r.highlights = -30
             r.shadows = 28
-            r.vibrance = 18
+            r.vibrance = 20
             r.vignette = -14
+        case .coolShadeFix:
+            r.exposure = 0.25
+            r.whiteBalanceMode = .customKelvin
+            r.customKelvin = 6200
+            r.tint = 6
+            r.contrast = 12
+            r.shadows = 22
+            r.vibrance = 16
+        case .overcastPop:
+            r.exposure = 0.2
+            r.whiteBalanceMode = .customKelvin
+            r.customKelvin = 6400
+            r.tint = 4
+            r.contrast = 22
+            r.highlights = -22
+            r.shadows = 16
+            r.clarity = 22
+            r.vibrance = 22
         case .indoorTungstenBalance:
             r.exposure = 0.45
             r.whiteBalanceMode = .customKelvin
@@ -406,14 +612,16 @@ public enum RecipePreset: String, CaseIterable, Identifiable, Sendable {
             r.shadows = 35
             r.luminanceNoiseReduction = 35
             r.colorNoiseReduction = 55
-        case .coolShadeFix:
-            r.exposure = 0.25
-            r.whiteBalanceMode = .customKelvin
-            r.customKelvin = 6200
-            r.tint = 6
-            r.contrast = 12
-            r.shadows = 22
-            r.vibrance = 16
+        case .warmPortrait:
+            r.exposure = 0.2
+            r.temperatureShift = 350
+            r.tint = 5
+            r.contrast = 6
+            r.highlights = -22
+            r.shadows = 26
+            r.clarity = -8
+            r.vibrance = 10
+            r.vignette = -10
         case .highISOClean:
             r.exposure = 0.35
             r.highlights = -18
@@ -422,6 +630,38 @@ public enum RecipePreset: String, CaseIterable, Identifiable, Sendable {
             r.luminanceNoiseReduction = 55
             r.colorNoiseReduction = 75
             r.sharpness = 20
+        case .cleanFilm:
+            r.whiteBalanceMode = .customKelvin
+            r.customKelvin = 5750
+            r.tint = 3
+            r.contrast = 14
+            r.highlights = -28
+            r.shadows = 18
+            r.blacks = 12
+            r.vibrance = 16
+            r.saturation = -6
+        case .moodyMatte:
+            r.exposure = -0.2
+            r.contrast = 20
+            r.highlights = -35
+            r.shadows = -10
+            r.blacks = 26
+            r.saturation = -22
+            r.vibrance = 10
+            r.clarity = 16
+            r.vignette = -24
+        case .cinematicTealAmber:
+            r.whiteBalanceMode = .customKelvin
+            r.customKelvin = 5100
+            r.tint = -10
+            r.contrast = 24
+            r.highlights = -32
+            r.shadows = 14
+            r.blacks = -10
+            r.vibrance = 24
+            r.saturation = -8
+            r.clarity = 20
+            r.vignette = -22
         case .editorialMonochrome:
             r.contrast = 28
             r.highlights = -30
@@ -431,6 +671,15 @@ public enum RecipePreset: String, CaseIterable, Identifiable, Sendable {
             r.saturation = -100
             r.clarity = 22
             r.vignette = -18
+        case .highContrastBW:
+            r.contrast = 52
+            r.highlights = -20
+            r.shadows = -12
+            r.whites = 22
+            r.blacks = -32
+            r.saturation = -100
+            r.clarity = 34
+            r.vignette = -26
         }
         return r
     }
@@ -634,19 +883,21 @@ public enum ResizeMode: String, CaseIterable, Codable, Identifiable, Sendable {
 }
 
 public enum ExportScope: String, CaseIterable, Codable, Identifiable, Sendable {
-    case allPhotos
+    case currentPhoto
     case selectedPhotos
     case labeledOnly
     case activeGroupOnly
+    case allPhotos
 
     public var id: String { rawValue }
 
     public var displayName: String {
         switch self {
-        case .allPhotos: return "All Photos in Folder"
+        case .currentPhoto: return "Current Photo Only"
         case .selectedPhotos: return "Selected Photos"
         case .labeledOnly: return "All Labeled Photos"
         case .activeGroupOnly: return "Active Group Only"
+        case .allPhotos: return "All Photos in Folder"
         }
     }
 }

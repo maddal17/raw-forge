@@ -268,9 +268,30 @@ public enum RawRenderPipeline {
     }
 }
 
+private final class RenderTicketGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var latestID: UInt64 = 0
+
+    func issueNext() -> UInt64 {
+        lock.lock()
+        latestID &+= 1
+        let id = latestID
+        lock.unlock()
+        return id
+    }
+
+    func isCurrent(_ id: UInt64) -> Bool {
+        lock.lock()
+        let current = latestID
+        lock.unlock()
+        return id == current
+    }
+}
+
 /// Interactive Metal-backed loupe renderer that caches the active `CIRAWFilter` across live slider drags.
 public actor InteractiveLoupeRenderer {
     private let context: CIContext
+    private let ticketGate = RenderTicketGate()
     private var cachedURL: URL?
     private var cachedFilter: CIRAWFilter?
     private var cachedAsShotTemp: Float = 5500
@@ -293,6 +314,10 @@ public actor InteractiveLoupeRenderer {
         }
     }
 
+    public nonisolated func issueTicket() -> UInt64 {
+        ticketGate.issueNext()
+    }
+
     public func clearCache() {
         cachedURL = nil
         cachedFilter = nil
@@ -304,8 +329,12 @@ public actor InteractiveLoupeRenderer {
         recipe: EditRecipe,
         maxEdgePixels: Int,
         draftMode: Bool,
-        watermark: WatermarkSettings?
+        watermark: WatermarkSettings?,
+        ticket: UInt64? = nil
     ) -> LoupeRenderOutput? {
+        if let ticket, !ticketGate.isCurrent(ticket) {
+            return nil
+        }
         let start = CFAbsoluteTimeGetCurrent()
         let longEdge = max(photo.dimensions.width, photo.dimensions.height)
         let computedScale: Double = longEdge > 0
@@ -380,6 +409,9 @@ public actor InteractiveLoupeRenderer {
             )
         }
 
+        if let ticket, !ticketGate.isCurrent(ticket) {
+            return nil
+        }
         guard let finalCI = outputCI, !finalCI.extent.isEmpty else { return nil }
         let srgbCS = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         guard let cgImage = context.createCGImage(
