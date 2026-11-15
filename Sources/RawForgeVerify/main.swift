@@ -307,7 +307,13 @@ struct RawForgeVerify {
             meta.includeGroupNameAsKeyword = true
 
             let engine = BatchConversionEngine()
-            let hasHardwareGPU = MTLCreateSystemDefaultDevice() != nil
+            let metalDevice = MTLCreateSystemDefaultDevice()
+            let gpuName = metalDevice?.name ?? ""
+            let isVirtualGPU = metalDevice == nil
+                || gpuName.localizedCaseInsensitiveContains("paravirtual")
+                || gpuName.localizedCaseInsensitiveContains("virtual")
+                || gpuName.localizedCaseInsensitiveContains("software")
+            let supportedDestTypes = Set((CGImageDestinationCopyTypeIdentifiers() as? [String]) ?? [])
             let formats: [(ExportFormat, Bool)] = [
                 (.jpeg, false),
                 (.heic, false),
@@ -331,8 +337,9 @@ struct RawForgeVerify {
                     metadata: meta,
                     onProgress: { _ in }
                 )
-                if !hasHardwareGPU && (format == .heic || format == .avif) && res.succeededCount == 0 {
-                    print("         [VM-NOTE] Skipping \(format.displayName) encode assertion on software-only VM")
+                let utiSupported = supportedDestTypes.contains(format.utiIdentifier)
+                if (isVirtualGPU || !utiSupported) && (format == .heic || format == .avif) && res.succeededCount == 0 {
+                    print("         [VM-NOTE] Skipping \(format.displayName) encode assertion (gpu=\(gpuName), utiSupported=\(utiSupported))")
                     continue
                 }
                 try expectEqual(res.succeededCount, 1, "Export failed for \(format.displayName)")
