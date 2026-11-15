@@ -1,0 +1,27 @@
+name: CI & Verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-verify:
+    name: macOS Swift 6 Build & Verification Suite
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build RawForge.app & run verification suite
+        run: make clean && make build
+
+      - name: Verify app bundle code signature
+        run: codesign --verify --deep --strict dist/RawForge.app
+
+      - name: Run headless GUI self-check
+        run: ./dist/RawForge.app/Contents/MacOS/RawForgeApp --self-check
