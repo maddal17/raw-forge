@@ -56,6 +56,20 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum ActiveModalSheet: Identifiable, Equatable {
+    case settings(tab: SettingsTab, returnToExport: Bool = false)
+    case export
+
+    var id: String {
+        switch self {
+        case .settings:
+            return "settings"
+        case .export:
+            return "export"
+        }
+    }
+}
+
 struct PhotoSectionGroup: Identifiable {
     let id: String
     let group: LabelGroup?
@@ -116,13 +130,10 @@ final class AppViewModel: ObservableObject {
     // Settings & Export
     @Published var globalSettings: GlobalAppSettings {
         didSet {
-            AlbumProjectPersistence.saveGlobalSettings(globalSettings)
-            scheduleLoupeRender(draft: false)
+            scheduleGlobalSettingsCommit()
         }
     }
-    @Published var isSettingsPresented: Bool = false
-    @Published var settingsInitialTab: SettingsTab = .watermark
-    @Published var isExportSheetPresented: Bool = false
+    @Published var activeModal: ActiveModalSheet?
     @Published var exportScope: ExportScope = .allPhotos
     @Published var exportDestinationURL: URL?
     @Published var isExporting: Bool = false
@@ -133,6 +144,7 @@ final class AppViewModel: ObservableObject {
     private var loupeRenderTask: Task<Void, Never>?
     private var settleHighQualityTask: Task<Void, Never>?
     private var thumbnailRefreshTask: Task<Void, Never>?
+    private var settingsCommitTask: Task<Void, Never>?
     private var inFlightThumbnails: Set<UUID> = []
     private var exportTask: Task<Void, Never>?
 
@@ -294,7 +306,7 @@ final class AppViewModel: ObservableObject {
                 await loadFolder(url: url)
             } else {
                 let ext = url.pathExtension.lowercased()
-                if RawFormatCatalog.standardExtensions.contains(ext) {
+                if RawFormatCatalog.standardExtensions.contains(ext), !CommandLine.arguments.contains("--self-check") {
                     globalSettings.includeStandardImages = true
                 }
                 await loadFolder(url: url.deletingLastPathComponent(), selectFileURL: url)
@@ -406,10 +418,29 @@ final class AppViewModel: ObservableObject {
     }
 
     private func recordRecentFolder(_ url: URL) {
+        guard !CommandLine.arguments.contains("--self-check") else { return }
         let path = url.standardizedFileURL.path
         var recents = globalSettings.recentFolders.filter { $0 != path }
         recents.insert(path, at: 0)
         globalSettings.recentFolders = Array(recents.prefix(8))
+    }
+
+    private func scheduleGlobalSettingsCommit() {
+        guard !CommandLine.arguments.contains("--self-check") else { return }
+        settingsCommitTask?.cancel()
+        settingsCommitTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled, let self else { return }
+            AlbumProjectPersistence.saveGlobalSettings(self.globalSettings)
+            self.scheduleLoupeRender(draft: false)
+        }
+    }
+
+    private func flushGlobalSettingsIfNeeded() {
+        guard !CommandLine.arguments.contains("--self-check") else { return }
+        settingsCommitTask?.cancel()
+        settingsCommitTask = nil
+        AlbumProjectPersistence.saveGlobalSettings(globalSettings)
     }
 
     private func persistAlbumState() {
@@ -767,13 +798,46 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - Batch Export
 
+    func openSettings(tab: SettingsTab = .watermark, returnToExport: Bool = false) {
+        let target = ActiveModalSheet.settings(tab: tab, returnToExport: returnToExport)
+        if case .export = activeModal {
+            activeModal = nil
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(60))
+                self?.activeModal = target
+            }
+        } else {
+            activeModal = target
+        }
+    }
+
+    func dismissSettingsAndReturnToExportIfNeeded(_ shouldReturn: Bool) {
+        flushGlobalSettingsIfNeeded()
+        activeModal = nil
+        if shouldReturn {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(60))
+                self?.openExportSheet()
+            }
+        }
+    }
+
     func openExportSheet() {
+        flushGlobalSettingsIfNeeded()
         if exportDestinationURL == nil, let folder = currentFolderURL {
             exportDestinationURL = folder.appendingPathComponent("RawForge Export", isDirectory: true)
         }
         exportResult = nil
         exportProgress = nil
-        isExportSheetPresented = true
+        if case .settings = activeModal {
+            activeModal = nil
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(60))
+                self?.activeModal = .export
+            }
+        } else {
+            activeModal = .export
+        }
     }
 
     func chooseExportDestinationPanel() {

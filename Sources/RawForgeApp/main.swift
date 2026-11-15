@@ -89,7 +89,7 @@ final class RawForgeAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openSettingsAction(_ sender: Any?) {
-        viewModel.isSettingsPresented = true
+        viewModel.openSettings()
     }
 
     @objc private func exportAction(_ sender: Any?) {

@@ -15,7 +15,7 @@ final class KeyEventMonitor {
             if event.window?.firstResponder is NSText || event.window?.firstResponder is NSTextView {
                 return event
             }
-            if viewModel.isSettingsPresented || viewModel.isExportSheetPresented {
+            if viewModel.activeModal != nil {
                 return event
             }
 

@@ -2,15 +2,17 @@ import AppKit
 import CoreImage
 import RawForgeCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsSheetView: View {
     @ObservedObject var viewModel: AppViewModel
-    @Environment(\.dismiss) private var dismiss
+    let returnToExport: Bool
     @State private var selectedTab: SettingsTab
 
-    init(viewModel: AppViewModel) {
+    init(viewModel: AppViewModel, initialTab: SettingsTab = .watermark, returnToExport: Bool = false) {
         self.viewModel = viewModel
-        _selectedTab = State(initialValue: viewModel.settingsInitialTab)
+        self.returnToExport = returnToExport
+        _selectedTab = State(initialValue: initialTab)
     }
 
     var body: some View {
@@ -27,9 +29,11 @@ struct SettingsSheetView: View {
                 .pickerStyle(.segmented)
                 .frame(width: 470)
                 Spacer()
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
+                Button(returnToExport ? "Done (Back to Export)" : "Done") {
+                    viewModel.dismissSettingsAndReturnToExportIfNeeded(returnToExport)
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
             }
             .padding(16)
             .background(StudioTheme.surfaceBg)
@@ -56,23 +60,45 @@ struct SettingsSheetView: View {
         HStack(spacing: 18) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    Toggle("Enable Author Watermark on Export", isOn: $viewModel.globalSettings.watermark.isEnabled)
-                        .font(.system(size: 13, weight: .semibold))
+                    HStack(spacing: 10) {
+                        Image(systemName: viewModel.globalSettings.watermark.isEnabled ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(viewModel.globalSettings.watermark.isEnabled ? Color.green : Color.orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(viewModel.globalSettings.watermark.isEnabled
+                                 ? "Author Watermark Enabled"
+                                 : "Watermark Currently OFF — Toggle ON or edit any control")
+                                .font(.system(size: 12.5, weight: .semibold))
+                            Text("Applied consistently to Big Preview and exported files.")
+                                .font(.caption2)
+                                .foregroundStyle(StudioTheme.textSecondary)
+                        }
+                        Spacer()
+                        Toggle("", isOn: $viewModel.globalSettings.watermark.isEnabled)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                    }
+                    .padding(10)
+                    .background((viewModel.globalSettings.watermark.isEnabled ? Color.green : Color.orange).opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke((viewModel.globalSettings.watermark.isEnabled ? Color.green : Color.orange).opacity(0.35), lineWidth: 1)
+                    )
 
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Author Text (supports {year} and {camera})")
                             .font(.caption)
                             .foregroundStyle(StudioTheme.textSecondary)
-                        TextField("© {year} Studio Name", text: $viewModel.globalSettings.watermark.authorText)
+                        TextField("© {year} Studio Name", text: watermarkBinding(\.authorText))
                             .textFieldStyle(.roundedBorder)
                     }
 
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Optional PNG/SVG Logo Overlay")
+                        Text("Optional PNG/SVG/PDF Logo Overlay")
                             .font(.caption)
                             .foregroundStyle(StudioTheme.textSecondary)
                         HStack {
-                            TextField("No logo selected", text: $viewModel.globalSettings.watermark.logoImagePath)
+                            TextField("No logo selected", text: watermarkBinding(\.logoImagePath))
                                 .textFieldStyle(.roundedBorder)
                             Button("Browse…") {
                                 chooseLogoFile()
@@ -90,7 +116,7 @@ struct SettingsSheetView: View {
                             Text("Placement")
                                 .font(.caption)
                                 .foregroundStyle(StudioTheme.textSecondary)
-                            Picker("", selection: $viewModel.globalSettings.watermark.position) {
+                            Picker("", selection: watermarkBinding(\.position)) {
                                 ForEach(WatermarkPosition.allCases) { pos in
                                     Text(pos.displayName).tag(pos)
                                 }
@@ -102,7 +128,7 @@ struct SettingsSheetView: View {
                             Text("Typography")
                                 .font(.caption)
                                 .foregroundStyle(StudioTheme.textSecondary)
-                            Picker("", selection: $viewModel.globalSettings.watermark.fontStyle) {
+                            Picker("", selection: watermarkBinding(\.fontStyle)) {
                                 ForEach(WatermarkFontStyle.allCases) { style in
                                     Text(style.displayName).tag(style)
                                 }
@@ -112,14 +138,14 @@ struct SettingsSheetView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 10) {
-                        sliderRow("Size (% of short edge)", value: $viewModel.globalSettings.watermark.sizePercent, range: 1.0...12.0, fmt: "%.1f%%")
-                        sliderRow("Opacity", value: $viewModel.globalSettings.watermark.opacity, range: 0.05...1.0, fmt: "%.2f")
-                        sliderRow("Edge Margin", value: $viewModel.globalSettings.watermark.marginPercent, range: 0.5...10.0, fmt: "%.1f%%")
+                        sliderRow("Size (% of short edge)", value: watermarkBinding(\.sizePercent), range: 1.0...12.0, fmt: "%.1f%%")
+                        sliderRow("Opacity", value: watermarkBinding(\.opacity), range: 0.05...1.0, fmt: "%.2f")
+                        sliderRow("Edge Margin", value: watermarkBinding(\.marginPercent), range: 0.5...10.0, fmt: "%.1f%%")
                     }
 
                     HStack(spacing: 16) {
-                        Toggle("Drop Shadow", isOn: $viewModel.globalSettings.watermark.dropShadow)
-                        Toggle("Dark Backing Pill", isOn: $viewModel.globalSettings.watermark.backgroundPill)
+                        Toggle("Drop Shadow", isOn: watermarkBinding(\.dropShadow))
+                        Toggle("Dark Backing Pill", isOn: watermarkBinding(\.backgroundPill))
                     }
 
                     HStack(spacing: 10) {
@@ -137,7 +163,10 @@ struct SettingsSheetView: View {
                                     )
                                 )
                                 .onTapGesture {
-                                    viewModel.globalSettings.watermark.textColorHex = hex
+                                    var updated = viewModel.globalSettings.watermark
+                                    updated.textColorHex = hex
+                                    updated.isEnabled = true
+                                    viewModel.globalSettings.watermark = updated
                                 }
                         }
                     }
@@ -319,13 +348,30 @@ struct SettingsSheetView: View {
         }
     }
 
+    private func watermarkBinding<Value>(_ keyPath: WritableKeyPath<WatermarkSettings, Value>) -> Binding<Value> {
+        Binding(
+            get: { viewModel.globalSettings.watermark[keyPath: keyPath] },
+            set: { newValue in
+                var updated = viewModel.globalSettings.watermark
+                updated[keyPath: keyPath] = newValue
+                if !updated.isEnabled {
+                    updated.isEnabled = true
+                }
+                viewModel.globalSettings.watermark = updated
+            }
+        )
+    }
+
     private func chooseLogoFile() {
         let panel = NSOpenPanel()
-        panel.title = "Choose Watermark Logo (PNG recommended)"
-        panel.allowedContentTypes = [.png, .jpeg, .tiff, .heic]
+        panel.title = "Choose Watermark Logo (PNG, SVG, or PDF recommended)"
+        panel.allowedContentTypes = [.png, .jpeg, .tiff, .heic, .svg, .pdf]
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url {
-            viewModel.globalSettings.watermark.logoImagePath = url.path
+            var updated = viewModel.globalSettings.watermark
+            updated.logoImagePath = url.path
+            updated.isEnabled = true
+            viewModel.globalSettings.watermark = updated
         }
     }
 }
@@ -336,11 +382,24 @@ private struct WatermarkLivePreview: View {
     private static let previewContext = CIContext()
 
     var body: some View {
-        if let cg = renderPreview() {
-            CGImageView(cgImage: cg)
-                .aspectRatio(contentMode: .fill)
-        } else {
-            Color.black
+        ZStack(alignment: .topLeading) {
+            if let cg = renderPreview() {
+                CGImageView(cgImage: cg)
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Color.black
+            }
+
+            if !settings.isEnabled {
+                Text("DISABLED — Toggle ON above or edit any control")
+                    .font(.system(size: 9.5, weight: .bold))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.orange)
+                    .clipShape(Capsule())
+                    .padding(8)
+            }
         }
     }
 
@@ -358,10 +417,13 @@ private struct WatermarkLivePreview: View {
             "inputColor1": CIColor(red: 0.12, green: 0.16, blue: 0.24, alpha: 0.0)
         ])?.outputImage?.cropped(to: baseCI.extent)
 
-        var composed = sun?.composited(over: baseCI) ?? baseCI
-        if settings.isEnabled {
-            composed = WatermarkRenderer.apply(settings, to: composed, cameraModel: "Lumix G95")
-        }
+        var previewSettings = settings
+        previewSettings.isEnabled = true
+        let composed = WatermarkRenderer.apply(
+            previewSettings,
+            to: sun?.composited(over: baseCI) ?? baseCI,
+            cameraModel: "Lumix G95"
+        )
         return Self.previewContext.createCGImage(composed, from: composed.extent)
     }
 }

@@ -147,11 +147,23 @@ struct ExportModalView: View {
                             Toggle("Apply Author Watermark", isOn: $viewModel.globalSettings.watermark.isEnabled)
                             Spacer()
                             Button("Watermark Settings…") {
-                                viewModel.isExportSheetPresented = false
-                                viewModel.settingsInitialTab = .watermark
-                                viewModel.isSettingsPresented = true
+                                viewModel.openSettings(tab: .watermark, returnToExport: true)
                             }
                             .buttonStyle(.link)
+                        }
+
+                        if viewModel.globalSettings.watermark.isEnabled {
+                            HStack(spacing: 10) {
+                                TextField("© {year} Author Name", text: $viewModel.globalSettings.watermark.authorText)
+                                    .textFieldStyle(.roundedBorder)
+                                Picker("", selection: $viewModel.globalSettings.watermark.position) {
+                                    ForEach(WatermarkPosition.allCases) { pos in
+                                        Text(pos.displayName).tag(pos)
+                                    }
+                                }
+                                .labelsHidden()
+                                .frame(width: 155)
+                            }
                         }
 
                         HStack {
@@ -162,9 +174,7 @@ struct ExportModalView: View {
                                 .foregroundStyle(StudioTheme.textSecondary)
                             Spacer()
                             Button("Edit Metadata…") {
-                                viewModel.isExportSheetPresented = false
-                                viewModel.settingsInitialTab = .metadata
-                                viewModel.isSettingsPresented = true
+                                viewModel.openSettings(tab: .metadata, returnToExport: true)
                             }
                             .buttonStyle(.link)
                         }

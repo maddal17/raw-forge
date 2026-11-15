@@ -66,11 +66,17 @@ struct MainWindowView: View {
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             handleDrop(providers: providers)
         }
-        .sheet(isPresented: $viewModel.isSettingsPresented) {
-            SettingsSheetView(viewModel: viewModel)
-        }
-        .sheet(isPresented: $viewModel.isExportSheetPresented) {
-            ExportModalView(viewModel: viewModel)
+        .sheet(item: $viewModel.activeModal) { modal in
+            switch modal {
+            case .settings(let initialTab, let returnToExport):
+                SettingsSheetView(
+                    viewModel: viewModel,
+                    initialTab: initialTab,
+                    returnToExport: returnToExport
+                )
+            case .export:
+                ExportModalView(viewModel: viewModel)
+            }
         }
     }
 
@@ -129,8 +135,7 @@ struct MainWindowView: View {
             .help(viewModel.hardware.summaryBadge)
 
             Button {
-                viewModel.settingsInitialTab = .watermark
-                viewModel.isSettingsPresented = true
+                viewModel.openSettings(tab: .watermark)
             } label: {
                 Label("Settings", systemImage: "gearshape")
                     .font(.system(size: 12))

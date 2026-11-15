@@ -64,19 +64,22 @@ struct LoupeDevelopModeView: View {
             .toggleStyle(.button)
             .tint(viewModel.showBeforeOriginal ? .orange : .secondary)
 
-            if viewModel.globalSettings.watermark.isEnabled {
-                Toggle(isOn: Binding(
-                    get: { viewModel.previewWatermarkInLoupe },
-                    set: { val in
-                        viewModel.previewWatermarkInLoupe = val
-                        viewModel.scheduleLoupeRender(draft: false)
+            Toggle(isOn: Binding(
+                get: { viewModel.globalSettings.watermark.isEnabled && viewModel.previewWatermarkInLoupe },
+                set: { val in
+                    viewModel.globalSettings.watermark.isEnabled = val
+                    if val {
+                        viewModel.previewWatermarkInLoupe = true
                     }
-                )) {
-                    Label("Watermark", systemImage: "signature")
-                        .font(.system(size: 11.5))
+                    viewModel.scheduleLoupeRender(draft: false)
                 }
-                .toggleStyle(.button)
+            )) {
+                Label("Watermark", systemImage: "signature")
+                    .font(.system(size: 11.5))
             }
+            .toggleStyle(.button)
+            .tint(viewModel.globalSettings.watermark.isEnabled ? StudioTheme.accentBlue : .secondary)
+            .help("Toggle Author Watermark on Big Preview & Export")
 
             Toggle(isOn: $viewModel.zoomTo100) {
                 Label(viewModel.zoomTo100 ? "100%" : "Fit", systemImage: "magnifyingglass")

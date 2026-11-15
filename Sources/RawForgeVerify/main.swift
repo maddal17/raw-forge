@@ -66,6 +66,43 @@ private func sampleAverageRGB(_ cgImage: CGImage, rect: CGRect? = nil) -> (r: Do
     return (sumR / count, sumG / count, sumB / count)
 }
 
+/// Counts bright amber pixels (#F59E0B signature) within a region of a CGImage.
+private func countAmberPixels(_ cgImage: CGImage, rect: CGRect? = nil) -> Int {
+    let w = cgImage.width
+    let h = cgImage.height
+    let cs = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+    var bytes = [UInt8](repeating: 0, count: w * h * 4)
+    guard let ctx = CGContext(
+        data: &bytes,
+        width: w,
+        height: h,
+        bitsPerComponent: 8,
+        bytesPerRow: w * 4,
+        space: cs,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else {
+        return 0
+    }
+    ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: w, height: h))
+
+    let rRect = rect ?? CGRect(x: 0, y: 0, width: w, height: h)
+    let minX = max(0, Int(rRect.minX))
+    let maxX = min(w, Int(rRect.maxX))
+    let minY = max(0, Int(rRect.minY))
+    let maxY = min(h, Int(rRect.maxY))
+
+    var matches = 0
+    for y in minY..<maxY {
+        for x in minX..<maxX {
+            let idx = (y * w + x) * 4
+            if bytes[idx] > 180 && bytes[idx + 1] > 100 && bytes[idx + 2] < 70 {
+                matches += 1
+            }
+        }
+    }
+    return matches
+}
+
 @main
 struct RawForgeVerify {
     static func main() async {
@@ -188,6 +225,74 @@ struct RawForgeVerify {
             let wmCorner = sampleAverageRGB(wmOut.image, rect: cornerRect)
             let diff = abs(plainCorner.r - wmCorner.r) + abs(plainCorner.g - wmCorner.g) + abs(plainCorner.b - wmCorner.b)
             try expect(diff > 1.5, "Watermarked bottom-right region must differ measurably from plain render (diff=\(diff))")
+
+            // Regression checks for text-only #F59E0B, non-zero extent.origin, tiledDiagonal, SVG logo, and disabled toggle
+            let verifyCtx = CIContext()
+            let darkBase = CIImage(color: CIColor(red: 0.08, green: 0.10, blue: 0.14))
+                .cropped(to: CGRect(x: 0, y: 0, width: 480, height: 320))
+            var amberWM = WatermarkSettings()
+            amberWM.isEnabled = true
+            amberWM.authorText = "© 2026 Studio Author"
+            amberWM.position = .bottomRight
+            amberWM.sizePercent = 4.5
+            amberWM.opacity = 1.0
+            amberWM.textColorHex = "#F59E0B"
+            amberWM.dropShadow = true
+            amberWM.backgroundPill = false
+
+            let amberCI = WatermarkRenderer.apply(amberWM, to: darkBase)
+            let amberCG = verifyCtx.createCGImage(amberCI, from: darkBase.extent)!
+            let brAmber = countAmberPixels(amberCG, rect: CGRect(x: 240, y: 200, width: 240, height: 120))
+            let tlAmber = countAmberPixels(amberCG, rect: CGRect(x: 0, y: 0, width: 240, height: 120))
+            try expect(brAmber > 40, "Text-only #F59E0B watermark must render amber pixels in bottom-right (got \(brAmber))")
+            try expectEqual(tlAmber, 0, "Bottom-right text watermark must leave top-left untouched")
+
+            // Non-zero CIImage.extent.origin check
+            let shiftedRect = CGRect(x: 48, y: -24, width: 480, height: 320)
+            let shiftedBase = CIImage(color: CIColor(red: 0.08, green: 0.10, blue: 0.14)).cropped(to: shiftedRect)
+            let shiftedCI = WatermarkRenderer.apply(amberWM, to: shiftedBase)
+            let shiftedCG = verifyCtx.createCGImage(shiftedCI, from: shiftedRect)!
+            let shiftedBR = countAmberPixels(shiftedCG, rect: CGRect(x: 240, y: 200, width: 240, height: 120))
+            let shiftedTL = countAmberPixels(shiftedCG, rect: CGRect(x: 0, y: 0, width: 240, height: 120))
+            try expect(shiftedBR > 40 && shiftedTL == 0, "Shifted extent watermark must land cleanly in bottom-right (br=\(shiftedBR), tl=\(shiftedTL))")
+
+            // Tiled diagonal mode check
+            var tiledWM = amberWM
+            tiledWM.position = .tiledDiagonal
+            tiledWM.sizePercent = 4.0
+            let tiledCI = WatermarkRenderer.apply(tiledWM, to: darkBase)
+            let tiledCG = verifyCtx.createCGImage(tiledCI, from: darkBase.extent)!
+            let tiledCenter = countAmberPixels(tiledCG, rect: CGRect(x: 120, y: 80, width: 240, height: 160))
+            let tiledTL = countAmberPixels(tiledCG, rect: CGRect(x: 0, y: 0, width: 200, height: 140))
+            let tiledBR = countAmberPixels(tiledCG, rect: CGRect(x: 280, y: 180, width: 200, height: 140))
+            try expect(tiledCenter > 20 && (tiledTL > 10 || tiledBR > 10),
+                       "Tiled watermark must cover canvas regions (center=\(tiledCenter), tl=\(tiledTL), br=\(tiledBR))")
+
+            // Disabled guard check
+            var disabledWM = amberWM
+            disabledWM.isEnabled = false
+            let disabledCI = WatermarkRenderer.apply(disabledWM, to: darkBase)
+            let disabledCG = verifyCtx.createCGImage(disabledCI, from: darkBase.extent)!
+            try expectEqual(countAmberPixels(disabledCG), 0, "Disabled watermark must produce zero watermark pixels")
+
+            // SVG vector logo rasterization check
+            let svgURL = tempRoot.appendingPathComponent("amber-logo.svg")
+            let svgContent = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\"><circle cx=\"32\" cy=\"32\" r=\"28\" fill=\"#F59E0B\"/></svg>"
+            try Data(svgContent.utf8).write(to: svgURL)
+            var svgWM = WatermarkSettings()
+            svgWM.isEnabled = true
+            svgWM.authorText = ""
+            svgWM.logoImagePath = svgURL.path
+            svgWM.position = .topLeft
+            svgWM.sizePercent = 6.0
+            svgWM.opacity = 1.0
+            svgWM.dropShadow = false
+            svgWM.backgroundPill = false
+            let svgCI = WatermarkRenderer.apply(svgWM, to: darkBase)
+            let svgCG = verifyCtx.createCGImage(svgCI, from: darkBase.extent)!
+            let svgTL = countAmberPixels(svgCG, rect: CGRect(x: 0, y: 0, width: 160, height: 160))
+            let svgBR = countAmberPixels(svgCG, rect: CGRect(x: 320, y: 160, width: 160, height: 160))
+            try expect(svgTL > 40 && svgBR == 0, "SVG logo watermark must rasterize cleanly into top-left (tl=\(svgTL), br=\(svgBR))")
 
             // Metadata rules: subtract GPS & Serial, add Author/Copyright/Keywords + GroupName
             var meta = MetadataSettings()

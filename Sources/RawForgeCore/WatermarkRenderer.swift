@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import CoreImage
 import CoreText
@@ -25,18 +26,24 @@ public enum WatermarkRenderer {
 
         let targetWidth = max(1, Int(extent.width.rounded()))
         let targetHeight = max(1, Int(extent.height.rounded()))
-        guard let overlayCG = renderOverlayBitmap(
-            width: targetWidth,
-            height: targetHeight,
+        let srgbCS = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+
+        guard let rendered = renderOverlay(
+            canvasWidth: targetWidth,
+            canvasHeight: targetHeight,
             text: expandedText,
             logo: logoImage,
-            settings: settings
+            settings: settings,
+            colorSpace: srgbCS
         ) else {
             return image
         }
 
-        let overlayCI = CIImage(cgImage: overlayCG)
-            .transformed(by: CGAffineTransform(translationX: extent.origin.x, y: extent.origin.y))
+        let overlayCI = CIImage(cgImage: rendered.cgImage, options: [.colorSpace: srgbCS])
+            .transformed(by: CGAffineTransform(
+                translationX: extent.origin.x + rendered.offset.x,
+                y: extent.origin.y + rendered.offset.y
+            ))
         return overlayCI.composited(over: image).cropped(to: extent)
     }
 
@@ -51,37 +58,70 @@ public enum WatermarkRenderer {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let url = URL(fileURLWithPath: trimmed)
-        guard FileManager.default.fileExists(atPath: url.path),
-              let src = CGImageSourceCreateWithURL(url as CFURL, nil) else {
-            return nil
-        }
-        return CGImageSourceCreateImageAtIndex(src, 0, nil)
-    }
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
 
-    private static func renderOverlayBitmap(
-        width: Int,
-        height: Int,
-        text: String,
-        logo: CGImage?,
-        settings: WatermarkSettings
-    ) -> CGImage? {
-        let cs = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        if let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+           let cgImage = CGImageSourceCreateImageAtIndex(src, 0, nil) {
+            return cgImage
+        }
+
+        // Vector logos (.svg / .pdf) via AppKit NSImage rasterization
+        guard let nsImage = NSImage(contentsOf: url) else { return nil }
+        let rawSize = nsImage.size
+        let aspect = (rawSize.width > 0 && rawSize.height > 0) ? (rawSize.width / rawSize.height) : 1.0
+        let targetHeight: CGFloat = 512.0
+        let targetWidth = max(64.0, (targetHeight * aspect).rounded())
+        let pixelW = Int(targetWidth)
+        let pixelH = Int(targetHeight)
+
+        let srgbCS = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         guard let ctx = CGContext(
             data: nil,
-            width: width,
-            height: height,
+            width: pixelW,
+            height: pixelH,
             bitsPerComponent: 8,
             bytesPerRow: 0,
-            space: cs,
+            space: srgbCS,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else {
             return nil
         }
 
-        ctx.clear(CGRect(x: 0, y: 0, width: width, height: height))
-        ctx.setAlpha(CGFloat(max(0.05, min(1.0, settings.opacity))))
+        ctx.clear(CGRect(x: 0, y: 0, width: pixelW, height: pixelH))
+        var proposedRect = CGRect(x: 0, y: 0, width: pixelW, height: pixelH)
+        let gfx = NSGraphicsContext(cgContext: ctx, flipped: false)
+        if let cgFromNS = nsImage.cgImage(forProposedRect: &proposedRect, context: gfx, hints: nil) {
+            return cgFromNS
+        }
 
-        let shortEdge = CGFloat(min(width, height))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = gfx
+        nsImage.draw(in: proposedRect, from: .zero, operation: .sourceOver, fraction: 1.0)
+        NSGraphicsContext.restoreGraphicsState()
+        return ctx.makeImage()
+    }
+
+    private static func makeBitmapContext(width: Int, height: Int, colorSpace: CGColorSpace) -> CGContext? {
+        CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+    }
+
+    private static func renderOverlay(
+        canvasWidth: Int,
+        canvasHeight: Int,
+        text: String,
+        logo: CGImage?,
+        settings: WatermarkSettings,
+        colorSpace cs: CGColorSpace
+    ) -> (cgImage: CGImage, offset: CGPoint)? {
+        let shortEdge = CGFloat(min(canvasWidth, canvasHeight))
         let fontSize = max(10.0, shortEdge * CGFloat(settings.sizePercent) / 100.0)
         let margin = shortEdge * CGFloat(settings.marginPercent) / 100.0
 
@@ -129,7 +169,7 @@ public enum WatermarkRenderer {
         let pillPadY: CGFloat = settings.backgroundPill ? fontSize * 0.35 : 0
         let stampSize = CGSize(width: contentWidth + pillPadX * 2, height: contentHeight + pillPadY * 2)
 
-        func drawStamp(at origin: CGPoint) {
+        func drawStamp(in ctx: CGContext, at origin: CGPoint) {
             ctx.saveGState()
             let stampRect = CGRect(origin: origin, size: stampSize)
 
@@ -165,36 +205,59 @@ public enum WatermarkRenderer {
             ctx.restoreGState()
         }
 
+        let alpha = CGFloat(max(0.05, min(1.0, settings.opacity)))
+
         if settings.position == .tiledDiagonal {
-            let stepX = max(stampSize.width * 1.9, CGFloat(width) * 0.28)
-            let stepY = max(stampSize.height * 3.0, CGFloat(height) * 0.24)
-            let diagonal = hypot(CGFloat(width), CGFloat(height))
+            guard let ctx = makeBitmapContext(width: canvasWidth, height: canvasHeight, colorSpace: cs) else {
+                return nil
+            }
+            ctx.clear(CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight))
+            ctx.setAlpha(alpha)
+
+            let stepX = max(stampSize.width * 1.9, CGFloat(canvasWidth) * 0.28)
+            let stepY = max(stampSize.height * 3.0, CGFloat(canvasHeight) * 0.24)
+            let diagonal = hypot(CGFloat(canvasWidth), CGFloat(canvasHeight))
             ctx.saveGState()
-            ctx.translateBy(x: CGFloat(width) / 2.0, y: CGFloat(height) / 2.0)
+            ctx.translateBy(x: CGFloat(canvasWidth) / 2.0, y: CGFloat(canvasHeight) / 2.0)
             ctx.rotate(by: -CGFloat.pi / 6.0)
             var y = -diagonal * 0.65
             var row = 0
             while y < diagonal * 0.65 {
                 var x = -diagonal * 0.65 + (row % 2 == 0 ? 0 : stepX * 0.5)
                 while x < diagonal * 0.65 {
-                    drawStamp(at: CGPoint(x: x - stampSize.width / 2.0, y: y - stampSize.height / 2.0))
+                    drawStamp(in: ctx, at: CGPoint(x: x - stampSize.width / 2.0, y: y - stampSize.height / 2.0))
                     x += stepX
                 }
                 y += stepY
                 row += 1
             }
             ctx.restoreGState()
+            guard let cgImage = ctx.makeImage() else { return nil }
+            return (cgImage, .zero)
         } else {
+            // Tight-stamp allocation avoids ~80 MB full-frame clear per photo on high-MP exports
+            let shadowPad: CGFloat = (settings.dropShadow && !settings.backgroundPill)
+                ? ceil(max(6.0, fontSize * 0.45))
+                : 2.0
+            let bitmapWidth = max(1, Int(ceil(stampSize.width + shadowPad * 2.0)))
+            let bitmapHeight = max(1, Int(ceil(stampSize.height + shadowPad * 2.0)))
+
+            guard let ctx = makeBitmapContext(width: bitmapWidth, height: bitmapHeight, colorSpace: cs) else {
+                return nil
+            }
+            ctx.clear(CGRect(x: 0, y: 0, width: bitmapWidth, height: bitmapHeight))
+            ctx.setAlpha(alpha)
+            drawStamp(in: ctx, at: CGPoint(x: shadowPad, y: shadowPad))
+
+            guard let cgImage = ctx.makeImage() else { return nil }
             let origin = anchorOrigin(
                 position: settings.position,
-                canvasSize: CGSize(width: width, height: height),
+                canvasSize: CGSize(width: canvasWidth, height: canvasHeight),
                 stampSize: stampSize,
                 margin: margin
             )
-            drawStamp(at: origin)
+            return (cgImage, CGPoint(x: origin.x - shadowPad, y: origin.y - shadowPad))
         }
-
-        return ctx.makeImage()
     }
 
     private static func anchorOrigin(
