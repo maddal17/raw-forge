@@ -71,14 +71,24 @@ public struct HardwareCapabilities: Sendable {
     }
 }
 
+/// Thread-safe Sendable wrapper for `CIContext` (immutable & thread-safe per CoreImage documentation;
+/// bridges macOS 15 SDK where `CIContext` lacked `Sendable` conformance).
+public struct SendableCIContext: @unchecked Sendable {
+    public let rawContext: CIContext
+
+    public init(_ rawContext: CIContext) {
+        self.rawContext = rawContext
+    }
+}
+
 /// Manages a bounded pool of Metal-backed `CIContext` instances sharing Apple Silicon Unified Memory.
 public final class CIContextPool: @unchecked Sendable {
     public let capabilities: HardwareCapabilities
     public let metalDevice: MTLDevice?
 
     private let lock = NSLock()
-    private var availableContexts: [CIContext]
-    private var waiters: [CheckedContinuation<CIContext, Never>] = []
+    private var availableContexts: [SendableCIContext]
+    private var waiters: [CheckedContinuation<SendableCIContext, Never>] = []
 
     public init(capabilities: HardwareCapabilities = .detect(), contextCount: Int? = nil) {
         self.capabilities = capabilities
@@ -86,29 +96,29 @@ public final class CIContextPool: @unchecked Sendable {
         self.metalDevice = device
 
         let poolSize = max(1, min(6, contextCount ?? min(4, capabilities.optimalBatchConcurrency)))
-        var contexts: [CIContext] = []
+        var contexts: [SendableCIContext] = []
         let workingCS = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3) ?? CGColorSpaceCreateDeviceRGB()
 
         for _ in 0..<poolSize {
             if let device {
-                contexts.append(CIContext(mtlDevice: device, options: [
+                contexts.append(SendableCIContext(CIContext(mtlDevice: device, options: [
                     .workingColorSpace: workingCS,
                     .workingFormat: CIFormat.RGBAh,
                     .cacheIntermediates: false,
                     .priorityRequestLow: false
-                ]))
+                ])))
             } else {
-                contexts.append(CIContext(options: [
+                contexts.append(SendableCIContext(CIContext(options: [
                     .workingColorSpace: workingCS,
                     .workingFormat: CIFormat.RGBAh,
                     .cacheIntermediates: false
-                ]))
+                ])))
             }
         }
         self.availableContexts = contexts
     }
 
-    public func lease() async -> CIContext {
+    public func lease() async -> SendableCIContext {
         await withCheckedContinuation { continuation in
             lock.lock()
             if !availableContexts.isEmpty {
@@ -122,7 +132,7 @@ public final class CIContextPool: @unchecked Sendable {
         }
     }
 
-    public func release(_ context: CIContext) {
+    public func release(_ context: SendableCIContext) {
         lock.lock()
         if !waiters.isEmpty {
             let next = waiters.removeFirst()
@@ -134,7 +144,7 @@ public final class CIContextPool: @unchecked Sendable {
         }
     }
 
-    public func withContext<T: Sendable>(_ body: @Sendable (CIContext) throws -> T) async rethrows -> T {
+    public func withContext<T: Sendable>(_ body: @Sendable (SendableCIContext) throws -> T) async rethrows -> T {
         let ctx = await lease()
         defer { release(ctx) }
         return try body(ctx)

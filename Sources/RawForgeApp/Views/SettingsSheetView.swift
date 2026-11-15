@@ -379,7 +379,7 @@ struct SettingsSheetView: View {
 private struct WatermarkLivePreview: View {
     let settings: WatermarkSettings
 
-    private static let previewContext = CIContext()
+    private static let previewContext = SendableCIContext(CIContext())
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -424,6 +424,6 @@ private struct WatermarkLivePreview: View {
             to: sun?.composited(over: baseCI) ?? baseCI,
             cameraModel: "Lumix G95"
         )
-        return Self.previewContext.createCGImage(composed, from: composed.extent)
+        return Self.previewContext.rawContext.createCGImage(composed, from: composed.extent)
     }
 }

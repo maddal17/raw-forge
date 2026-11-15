@@ -232,9 +232,21 @@ struct MainWindowView: View {
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
         let vm = viewModel
-        let lock = NSLock()
         final class Box: @unchecked Sendable {
-            var urls: [URL] = []
+            private let lock = NSLock()
+            private var urls: [URL] = []
+
+            func append(_ url: URL) {
+                lock.lock()
+                urls.append(url)
+                lock.unlock()
+            }
+
+            func snapshot() -> [URL] {
+                lock.lock()
+                defer { lock.unlock() }
+                return urls
+            }
         }
         let box = Box()
         let group = DispatchGroup()
@@ -252,17 +264,13 @@ struct MainWindowView: View {
                     resolved = nil
                 }
                 if let resolved {
-                    lock.lock()
-                    box.urls.append(resolved)
-                    lock.unlock()
+                    box.append(resolved)
                 }
             }
         }
 
         group.notify(queue: .main) {
-            lock.lock()
-            let dropped = box.urls
-            lock.unlock()
+            let dropped = box.snapshot()
             guard !dropped.isEmpty else { return }
             Task { @MainActor in
                 await vm.handleDroppedURLs(dropped)

@@ -144,8 +144,8 @@ public final class BatchConversionEngine: Sendable {
         watermark: WatermarkSettings,
         metadata: MetadataSettings
     ) async -> Result<(URL, Double), Error> {
-        let context = await contextPool.lease()
-        defer { contextPool.release(context) }
+        let leased = await contextPool.lease()
+        defer { contextPool.release(leased) }
 
         return autoreleasepool {
             do {
@@ -179,7 +179,7 @@ public final class BatchConversionEngine: Sendable {
                     : .RGBA8
                 let colorSpace = configuration.colorSpace.cgColorSpace
 
-                guard let cgImage = context.createCGImage(
+                guard let cgImage = leased.rawContext.createCGImage(
                     built.image,
                     from: built.image.extent,
                     format: renderFormat,
